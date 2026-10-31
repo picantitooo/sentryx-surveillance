@@ -88,6 +88,20 @@ class AlertStore(DetectionStore):
         finally:
             connection.close()
 
+    @_retry_transaction
+    def interrupt_camera(self, camera, reason):
+        """Interrumpe las alertas activas de una cámara (p. ej. al cambiar de worker)."""
+        connection = self.connect()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute("UPDATE alerts SET status='interrupted', interruption_reason=?, "
+                                            "fecha_hora_fin=? WHERE status='active' AND camera=?",
+                                            (reason, self.now(), camera))
+                return cursor.rowcount
+        finally:
+            connection.close()
+
     def get(self, identifier):
         connection = self.connect()
         try:

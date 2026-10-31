@@ -7,7 +7,8 @@ EventType = Literal["service_started", "service_stopped", "model_loading", "mode
                     "source_error", "transport_connected", "transport_disconnected",
                     "transport_error", "configuration_missing", "inference_completed",
                     "inference_error", "detection_storage_error", "window_discarded",
-                    "alert_opened", "alert_closed", "alert_interrupted", "alert_storage_error"]
+                    "alert_opened", "alert_closed", "alert_interrupted", "alert_storage_error",
+                    "source_assigned"]
 
 
 class InferenceLog(BaseModel):
