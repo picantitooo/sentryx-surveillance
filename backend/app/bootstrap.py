@@ -2,7 +2,9 @@
 import logging
 import asyncio
 import os
+import socket
 import time
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from app.infrastructure.streaming.webrtc import WebRTCReceiver
@@ -31,8 +33,17 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
+ROLES = ("all", "api", "worker")
+
+
 def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
-               transport: str | None = None, detection_db=None, log_db=None):
+               transport: str | None = None, detection_db=None, log_db=None,
+               role: str | None = None, coordination_store=None):
+    # all: un proceso hace todo (comportamiento original). api: sin modelo; atiende al panel y
+    # registra qué cámaras deben correr. worker: procesa las cámaras que le asigna la coordinación.
+    role = role or os.getenv("SENTRIX_ROLE", "all").strip().lower()
+    if role not in ROLES:
+        raise ValueError("SENTRIX_ROLE debe ser all, api o worker")
     database_url = os.getenv("SENTRIX_DATABASE_URL")
     if not database_url and not (detection_db or os.getenv("SENTRIX_DETECTION_DB")):
         raise ValueError("Configurar SENTRIX_DATABASE_URL con una conexión PostgreSQL")
@@ -41,12 +52,14 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     alert_store = AlertStore(store.path)
     event_policy = configured_event_policy()
     selected_mode = mode or os.getenv("SENTRIX_PREDICTOR", "videomae")
-    real_mode = predictor is None and selected_mode == "videomae"
+    real_mode = predictor is None and selected_mode == "videomae" and role != "api"
     if predictor is None and selected_mode not in ("videomae", "mock"):
         raise ValueError("SENTRIX_PREDICTOR debe ser videomae o mock")
     selected_transport = transport or os.getenv("SENTRIX_VIDEO_TRANSPORT", "rtsp")
     if selected_transport not in ("webrtc", "rtsp"):
         raise ValueError("SENTRIX_VIDEO_TRANSPORT debe ser webrtc o rtsp")
+    if role != "all" and selected_transport != "rtsp":
+        raise ValueError("Los roles api y worker solo admiten transporte RTSP")
     receiver_type = WebRTCReceiver
     receiver_options = {"detection_store": store, "log_store": log_store, "alert_store": alert_store}
     policy_factory = lambda: EventPolicy(event_policy.thresholds)
@@ -66,7 +79,22 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
             policy_factory=policy_factory, **receiver_options)
     else:
         receiver = receiver_type(predict_window, policy_factory=policy_factory, **receiver_options)
-    camera_service = (CameraService(CameraStore(store.path), receiver, receiver.default_camera, receiver.lock)
+    sources = coordinator = None
+    worker_id = None
+    if role != "all":
+        from app.infrastructure.persistence.coordination import CoordinationStore
+        from app.infrastructure.streaming.distributed import DistributedSources
+        coordination = coordination_store or CoordinationStore(database_url or "")
+        ttl = float(os.getenv("SENTRIX_LEASE_TTL", "15"))
+        sources = DistributedSources(coordination, worker_ttl=ttl)
+        if role == "worker":
+            from app.application.coordination import Coordinator
+            worker_id = os.getenv("SENTRIX_WORKER_ID") or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:6]}"
+            coordinator = Coordinator(coordination, CameraStore(store.path), receiver, alert_store, worker_id,
+                                      capacity=int(os.getenv("SENTRIX_WORKER_CAPACITY", "2")), ttl=ttl,
+                                      interval=float(os.getenv("SENTRIX_COORDINATION_INTERVAL", "2")))
+    camera_service = (CameraService(CameraStore(store.path), sources or receiver, receiver.default_camera,
+                                    receiver.lock)
                       if selected_transport == "rtsp" else None)
     @asynccontextmanager
     async def lifespan(app):
@@ -83,11 +111,14 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
             await asyncio.to_thread(initialize_storage)
         if selected_transport == "rtsp":
             await camera_service.initialize_cameras()
+        background = []
         try:
-            try:
-                await asyncio.to_thread(alert_store.interrupt, reason="service_restarted")
-            except Exception:
-                logger.exception("No se pudieron recuperar las alertas pendientes")
+            if role == "all":
+                # Con varios workers, cada uno interrumpe solo las alertas de las cámaras que hereda.
+                try:
+                    await asyncio.to_thread(alert_store.interrupt, reason="service_restarted")
+                except Exception:
+                    logger.exception("No se pudieron recuperar las alertas pendientes")
             if real_mode:
                 started = time.perf_counter()
                 await asyncio.to_thread(log_store.emit, "model_loading", "Iniciando carga de VideoMAE")
@@ -104,9 +135,24 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 logger.info("Modelo listo: %s", app.state.predictor.health())
                 await asyncio.to_thread(log_store.emit, "model_ready", "Modelo cargado y calentamiento completado",
                                         processing_ms=round((time.perf_counter()-started)*1000, 3))
-            await asyncio.to_thread(log_store.emit, "service_started", "Servicio de inferencia iniciado")
+            if sources is not None:
+                await sources.refresh()
+                background.append(asyncio.create_task(sources.run()))
+            if coordinator is not None:
+                background.append(asyncio.create_task(coordinator.run()))
+            await asyncio.to_thread(log_store.emit, "service_started", "Servicio de inferencia iniciado" +
+                                    ("" if role == "all" else f" (rol {role}" +
+                                     (f", worker {worker_id})" if worker_id else ")")))
             yield
         finally:
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
+            if coordinator is not None:
+                try:
+                    await coordinator.stop()
+                except Exception:
+                    logger.exception("No se pudieron liberar las cámaras del worker")
             await receiver.shutdown()
             await asyncio.to_thread(log_store.emit, "service_stopped", "Servicio de inferencia detenido")
             if real_mode:
@@ -135,15 +181,20 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     app.include_router(alerts_router(RecordQueries(alert_store,
         unavailable="Almacenamiento de alertas no disponible", missing="Alerta no encontrada")))
     app.state.video_receiver = receiver
+    app.state.role = role
+    app.state.worker_id = worker_id
+    app.state.sources = sources
     app.state.detection_store = store
     app.state.log_store = log_store
     app.state.alert_store = alert_store
-    app.state.predictor = predictor if predictor is not None else (None if real_mode else MockPredictor())
+    # La API no infiere: /predict responde 503 en lugar de usar el simulador.
+    app.state.predictor = predictor if predictor is not None else (
+        None if real_mode or role == "api" else MockPredictor())
 
     inference_service = InferenceService(lambda: app.state.predictor, store, log_store, real_mode=real_mode)
     detection_queries = RecordQueries(store, unavailable="Almacenamiento de detecciones no disponible",
                                       missing="Detección no encontrada")
-    app.include_router(inference_router(app, detection_queries, receiver, inference_service,
+    app.include_router(inference_router(app, detection_queries, sources or receiver, inference_service,
                        real_mode=real_mode, selected_transport=selected_transport, mock_type=MockPredictor))
     document_api_key(app)
     return app

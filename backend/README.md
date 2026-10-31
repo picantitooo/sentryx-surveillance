@@ -44,6 +44,32 @@ Para usar CPU de forma deliberada, `SENTRIX_PROVIDER=cpu`. Para pruebas sin mode
 `SENTRIX_PREDICTOR=mock` (`/health` informa `model_loaded: false` y cada predicción lleva
 `simulated: true`).
 
+## Escalamiento horizontal (roles)
+
+`SENTRIX_ROLE` separa el servicio en procesos que comparten la base PostgreSQL:
+
+| Rol | Qué hace |
+|---|---|
+| `all` (predeterminado) | Un solo proceso hace todo, como antes. |
+| `api` | Atiende al panel. No carga el modelo: `POST /sources/start` registra que la cámara debe correr y `GET /sources/{id}/status` muestra lo que publica el worker dueño. |
+| `worker` | Carga el modelo y procesa cámaras. Cada cámara la procesa un solo worker (lease en la base). |
+
+Cada worker renueva sus cámaras cada `SENTRIX_COORDINATION_INTERVAL` s (2) y toma como máximo una
+cámara libre por ciclo, solo si es de los menos cargados, hasta `SENTRIX_WORKER_CAPACITY` (2). Si un
+worker se apaga de golpe, sus cámaras pasan a otro cuando vence el lease (`SENTRIX_LEASE_TTL`, 15 s) y
+se interrumpen sus alertas abiertas (`worker_lost`). Con un apagado ordenado (Ctrl+C) las libera al
+instante. Las cámaras ya asignadas no se redistribuyen al sumar workers.
+
+En local, cada proceso en su propia terminal (los workers comparten la GPU):
+
+```powershell
+$env:SENTRIX_ROLE = 'api';    .\.venv\Scripts\python.exe backend/run_server.py --port 8000
+$env:SENTRIX_ROLE = 'worker'; .\.venv\Scripts\python.exe backend/run_server.py --port 8001
+$env:SENTRIX_ROLE = 'worker'; .\.venv\Scripts\python.exe backend/run_server.py --port 8002
+```
+
+El panel apunta solo a la API (puerto 8000). `GET /health` de la API lista los workers vivos y sus cámaras.
+
 ## Configuración (`backend/.env`)
 
 | Variable | Uso |
@@ -56,6 +82,8 @@ Para usar CPU de forma deliberada, `SENTRIX_PROVIDER=cpu`. Para pruebas sin mode
 | `SENTRIX_ALERT_THRESHOLDS` | JSON con los umbrales de las cuatro clases (ver EN-4). |
 | `TA2_QUEUE_SIZE` | Ventanas en cola por sesión, de 1 a 4 (predeterminado 2). |
 | `FRONTEND_ORIGINS` | Orígenes CORS permitidos, separados por comas. |
+| `SENTRIX_ROLE` | `all`, `api` o `worker` (ver Escalamiento horizontal). |
+| `SENTRIX_WORKER_CAPACITY`, `SENTRIX_LEASE_TTL`, `SENTRIX_COORDINATION_INTERVAL`, `SENTRIX_WORKER_ID` | Ajustes de los workers (2 cámaras, 15 s, 2 s, id automático). |
 | `SENTRIX_DETECTION_DB`, `SENTRIX_LOG_DB` | Solo sin `SENTRIX_DATABASE_URL`: archivos SQLite para pruebas locales. |
 
 ## API

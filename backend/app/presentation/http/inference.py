@@ -6,7 +6,9 @@ def inference_router(app, queries, receiver, inference_service, *, real_mode, se
     router = APIRouter()
     @router.get("/health")
     def health():
-        video_status = {"video_transport": selected_transport}
+        video_status = {"video_transport": selected_transport, "role": getattr(app.state, "role", "all")}
+        if getattr(app.state, "worker_id", None):
+            video_status["worker_id"] = app.state.worker_id
         if selected_transport == "rtsp":
             video_status["rtsp"] = receiver.connection_status()
         if real_mode:
