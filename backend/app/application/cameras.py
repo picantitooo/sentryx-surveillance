@@ -1,5 +1,6 @@
 """Camera registration and source lifecycle without HTTP or media libraries."""
 import asyncio
+import inspect
 from pydantic import ValidationError
 from app.domain.camera import CameraRegistration
 from app.application.ports import CameraRepository, SourceGateway
@@ -104,7 +105,9 @@ class CameraService:
                     raise NotFound("Camara no registrada")
             if active:
                 return self.sources.snapshot(active)  # POST idempotente por cámara
-            return self.sources.open(camera)
+            opened = self.sources.open(camera)
+            # Local: abre la sesión; distribuido: registra el estado deseado para los workers.
+            return await opened if inspect.isawaitable(opened) else opened
 
     async def source_status(self, source_id: str):
         await self._camera(source_id)
