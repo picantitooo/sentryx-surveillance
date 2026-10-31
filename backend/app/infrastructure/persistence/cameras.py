@@ -1,18 +1,32 @@
 """SQL camera repository."""
 import json
+from threading import Lock
 from app.domain.camera import CameraRegistration
 from app.infrastructure.persistence.database import connect
 
 class CameraStore:
     def __init__(self, target):
         self.target = target
+        self._schema_lock = Lock()
+        self._schema_ready = False
 
     def connect(self):
         connection = connect(self.target)
-        connection.execute("""CREATE TABLE IF NOT EXISTS cameras (
-            source_id TEXT PRIMARY KEY, config_json TEXT NOT NULL
-        )""")
-        return connection
+        try:
+            with self._schema_lock:
+                if not self._schema_ready:
+                    # Varios procesos pueden arrancar a la vez contra un esquema vacío.
+                    with connection:
+                        if str(self.target).startswith(("postgresql://", "postgres://")):
+                            connection.execute("SELECT pg_advisory_xact_lock(734821906)")
+                        connection.execute("""CREATE TABLE IF NOT EXISTS cameras (
+                            source_id TEXT PRIMARY KEY, config_json TEXT NOT NULL
+                        )""")
+                    self._schema_ready = True
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def get(self, source_id):
         connection = self.connect()
