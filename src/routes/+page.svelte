@@ -1,14 +1,20 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import AlertsView from '../lib/presentation/components/alerts/AlertsView.svelte';
+  import AlertDetailDialog from '../lib/presentation/components/alerts/AlertDetailDialog.svelte';
 
   type ViewId = 'overview' | 'monitor' | 'cameras' | 'detections' | 'alerts' | 'service';
   type LogLevel = 'all' | 'INFO' | 'WARNING' | 'ERROR' | 'DEBUG' | 'CRITICAL';
   interface Camera { id: string; number?: number; name: string; url: string; streamPath?: string; registeredAt: string; }
   interface Detection { id?: string; camera?: string; fecha_hora?: string; created_at?: string; clase?: string; class_name?: string; confianza?: number; processing_ms?: number; status?: string; }
-  interface Alert extends Detection { status?: string; }
+  interface Alert extends Detection { timestamp_inicio?: string; timestamp_fin?: string; fecha_hora_fin?: string; duracion_segundos?: number; interruption_reason?: string; threshold?: number; }
+  interface AlertListResponse { items?: Alert[]; total?: number; limit?: number; offset?: number; }
+  interface ClipResponse { status?: 'recording' | 'ready' | 'partial' | 'missing'; url?: string | null; duration_seconds?: number | null; }
   interface LatestResult { processing_ms?: number; }
-  interface InferenceSource { status?: string; frames_received?: number; windows_processed?: number; last_frame_age_seconds?: number | null; latest_result?: LatestResult; }
+  interface InferenceSource { status?: string; worker_id?: string | null; status_age_seconds?: number | null; frames_received?: number; windows_processed?: number; last_frame_age_seconds?: number | null; latest_result?: LatestResult; }
   interface InferenceResponse { available: boolean; source: InferenceSource | null; latestDetection?: Detection | null; detections?: Detection[]; alerts?: Alert[]; error?: string; }
+  interface DashboardResponse { available: boolean; sources?: Record<string, InferenceSource>; alerts?: Alert[]; error?: string; }
+  interface DetectionListResponse { items?: Detection[]; total?: number | null; }
   interface ServiceLog { id?: string; fecha_hora?: string; camera?: string | null; event_type?: string; level?: string; message?: string; processing_ms?: number | null; inference_ms?: number | null; session_id?: string | null; window_id?: string | null; detection_id?: string | null; }
   interface CameraListResponse { cameras?: Camera[]; }
   interface RegisterCameraResponse { camera: Camera; inference?: { available?: boolean; error?: string }; }
@@ -46,10 +52,20 @@
   let until = $state('');
   let detectionPage = $state(1);
   const DETECTION_PAGE_SIZE = 10;
+  let detectionResults = $state<Detection[]>([]);
+  let detectionTotal = $state<number | null>(null);
+  let detectionsLoading = $state(false);
   let serviceLogs = $state<ServiceLog[]>([]);
   let serviceLogsLoading = $state(false);
   let serviceLogsError = $state('');
   let serviceLogsLastRefresh = $state<Date | null>(null);
+  let allAlerts = $state<Alert[]>([]);
+  let alertsLoading = $state(false);
+  let alertsError = $state('');
+  let selectedAlert = $state<Alert | null>(null);
+  let clip = $state<ClipResponse | null>(null);
+  let clipLoading = $state(false);
+  let clipError = $state('');
   let logLevel = $state<LogLevel>('all');
   let logCamera = $state('all');
   let logQuery = $state('');
@@ -71,14 +87,11 @@
   let source = $derived(inference?.source ?? null);
   let detections = $derived(inference?.detections ?? (inference?.latestDetection ? [inference.latestDetection] : []));
   let latest = $derived(inference?.latestDetection ?? null);
-  let alerts = $derived(inference?.alerts ?? []);
+  let alerts = $derived(allAlerts);
   let aiConnected = $derived(inference?.available === true);
   let aiReceiving = $derived(aiConnected && ['receiving', 'running'].includes(source?.status ?? ''));
   let sourceAvailable = $derived(aiReceiving && (source?.last_frame_age_seconds == null || Number(source.last_frame_age_seconds) <= 10));
-  let filteredDetections = $derived(Object.entries(inferenceByCamera).flatMap(([cameraId, result]) => {
-    const items = result.detections?.length ? result.detections : result.latestDetection ? [result.latestDetection] : [];
-    return items.map((item) => ({ ...item, camera: item.camera ?? cameraId }));
-  }).filter((d) => {
+  let filteredDetections = $derived(detectionResults.filter((d) => {
     const cls = (d.clase ?? d.class_name ?? '').toLowerCase();
     const date = d.fecha_hora ?? d.created_at ?? '';
     return (actionFilter === 'all' || cls === actionFilter) &&
@@ -89,9 +102,9 @@
     const rightTime = new Date(right.fecha_hora ?? right.created_at ?? 0).getTime();
     return rightTime - leftTime;
   }));
-  let detectionPageCount = $derived(Math.max(1, Math.ceil(filteredDetections.length / DETECTION_PAGE_SIZE)));
+  let detectionPageCount = $derived(Math.max(1, Math.ceil((detectionTotal ?? filteredDetections.length) / DETECTION_PAGE_SIZE)));
   let currentDetectionPage = $derived(Math.min(detectionPage, detectionPageCount));
-  let paginatedDetections = $derived(filteredDetections.slice((currentDetectionPage - 1) * DETECTION_PAGE_SIZE, currentDetectionPage * DETECTION_PAGE_SIZE));
+  let paginatedDetections = $derived(filteredDetections);
   let filteredServiceLogs = $derived(serviceLogs.filter((log) => {
     const level = String(log.level ?? '').toUpperCase();
     const cameraId = String(log.camera ?? '');
@@ -137,7 +150,7 @@
     const date = new Date(value);
     return !Number.isNaN(date.getTime()) && new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(date) === todayKey;
   }));
-  let activeAlerts = $derived(overviewAlerts.filter((alert) => !['closed', 'resolved', 'dismissed'].includes(String(alert.status ?? '').toLowerCase())));
+  let activeAlerts = $derived(allAlerts.filter((alert) => String(alert.status ?? '').toLowerCase() === 'active'));
 
   function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
   async function getJSON<T>(path: string, options?: RequestInit): Promise<T> {
@@ -154,23 +167,35 @@
     catch (e) { error = errorMessage(e); }
     finally { loading = false; }
   }
-  async function fetchCameraInference(cameraId: string): Promise<InferenceResponse> {
-    try { return await getJSON<InferenceResponse>(`/api/inference?id=${encodeURIComponent(cameraId)}`); }
-    catch (e) { return { available: false, error: errorMessage(e), source: null, alerts: [], detections: [] }; }
-  }
   async function refreshInference(cameraId = camera?.id) {
-    if (!cameraId) { inference = null; return; }
-    const result = await fetchCameraInference(cameraId);
-    inferenceByCamera = { ...inferenceByCamera, [cameraId]: result };
-    if (cameraId === selectedId) inference = result;
-    lastRefresh = new Date();
+    await refreshAllInference();
   }
   async function refreshAllInference() {
     if (!cameras.length) { inferenceByCamera = {}; inference = null; return; }
-    const entries = await Promise.all(cameras.map(async (item) => [item.id, await fetchCameraInference(item.id)] as const));
-    inferenceByCamera = Object.fromEntries(entries);
+    try {
+      const snapshot = await getJSON<DashboardResponse>('/api/monitoring');
+      const next: Record<string, InferenceResponse> = {};
+      for (const item of cameras) {
+        const source = snapshot.sources?.[item.id] ?? null;
+        const latestDetection = source?.latest_result as Detection | undefined;
+        next[item.id] = { available: snapshot.available, source, latestDetection, detections: latestDetection ? [{ ...latestDetection, camera: item.id }] : [], alerts: [] };
+      }
+      inferenceByCamera = next;
+      allAlerts = snapshot.alerts ?? [];
+    } catch (e) {
+      inferenceByCamera = Object.fromEntries(cameras.map((item) => [item.id, { available: false, source: null, alerts: [], detections: [], error: errorMessage(e) }]));
+    }
     inference = selectedId ? inferenceByCamera[selectedId] ?? null : null;
     lastRefresh = new Date();
+  }
+  async function refreshDetections() {
+    detectionsLoading = true;
+    try {
+      const offset = (detectionPage - 1) * DETECTION_PAGE_SIZE;
+      const data = await getJSON<DetectionListResponse>(`/api/detections?limit=${DETECTION_PAGE_SIZE}&offset=${offset}`);
+      detectionResults = data.items ?? []; detectionTotal = data.total ?? null;
+    } catch { detectionResults = []; detectionTotal = 0; }
+    finally { detectionsLoading = false; }
   }
   async function refreshServiceLogs() {
     serviceLogsLoading = true;
@@ -186,6 +211,27 @@
       serviceLogsLoading = false;
     }
   }
+  async function refreshAlerts() {
+    alertsLoading = true; alertsError = '';
+    try {
+      const data = await getJSON<AlertListResponse>('/api/alerts?limit=100&offset=0');
+      allAlerts = data.items ?? [];
+    } catch (e) {
+      allAlerts = [];
+      alertsError = errorMessage(e);
+    } finally { alertsLoading = false; }
+  }
+  async function showAlertDetail(alert: Alert) {
+    selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
+    try {
+      const detail = alert.id ? await getJSON<Alert>(`/api/alerts/${encodeURIComponent(alert.id)}`) : alert;
+      selectedAlert = detail;
+      if (detail.id) clip = await getJSON<ClipResponse>(`/api/alerts/${encodeURIComponent(detail.id)}/clip`);
+      else clip = { status: 'missing', url: null };
+    } catch (e) { clipError = errorMessage(e); }
+    finally { clipLoading = false; }
+  }
+  function closeAlertDetail() { selectedAlert = null; clip = null; clipError = ''; }
   onMount(() => {
     let mounted = true;
     let fetching = false;
@@ -204,7 +250,9 @@
     loadCamera().then(() => {
       if (!mounted) return;
       refreshAllInference();
+      refreshAlerts();
       if (view === 'service') refreshServiceLogs();
+      if (view === 'detections') refreshDetections();
     });
     const timer = setInterval(async () => {
       if (!mounted || !cameras.length || fetching) return;
@@ -275,6 +323,30 @@
     const n = Number(value);
     return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '—';
   }
+  function duration(value: unknown) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) return '—';
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.round(seconds % 60);
+    return minutes ? `${minutes} min ${rest} s` : `${rest} s`;
+  }
+  function statusLabel(value: unknown) {
+    return ({ active: 'Activo', closed: 'Cerrado', interrupted: 'Interrumpido', recording: 'Grabando', ready: 'Listo', partial: 'Parcial', missing: 'No disponible' } as Record<string, string>)[String(value).toLowerCase()] ?? String(value || 'Registrado');
+  }
+  function sourceStatusLabel(item: InferenceSource | null | undefined, available = true) {
+    if (!available) return 'No disponible';
+    const status = String(item?.status ?? '').toLowerCase();
+    if (status === 'pending') return 'Esperando worker';
+    if (['running', 'receiving'].includes(status)) return 'En línea';
+    if (status === 'stopped') return 'Detenida';
+    return status ? statusLabel(status) : 'Sin estado';
+  }
+  function sourceWorkerLabel(item: InferenceSource | null | undefined) {
+    if (!item?.worker_id) return '';
+    const age = Number(item.status_age_seconds);
+    return `Worker: ${item.worker_id}${Number.isFinite(age) ? ` · hace ${Math.round(age)} s` : ''}`;
+  }
+  function isPending(item: InferenceSource | null | undefined) { return String(item?.status ?? '').toLowerCase() === 'pending'; }
   function labelClass(value: unknown) {
     return String(value || 'Sin clasificación').replaceAll('_', ' ');
   }
@@ -291,7 +363,7 @@
     return result?.available === true && ['receiving', 'running'].includes(itemSource?.status ?? '') &&
       (itemSource?.last_frame_age_seconds == null || Number(itemSource.last_frame_age_seconds) <= 10);
   }
-  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'monitor') monitorExpanded = false; if (id === 'service') refreshServiceLogs(); }
+  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'monitor') monitorExpanded = false; if (id === 'service') refreshServiceLogs(); if (id === 'alerts') refreshAlerts(); if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
     openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     clearFeedback(); name = ''; url = ''; modal = true;
@@ -337,14 +409,14 @@
 
 <div class="shell" class:a11y-high-contrast={highContrast} class:a11y-reduced-motion={reducedMotion} class:a11y-text-large={textSize === 'large'} class:a11y-text-xlarge={textSize === 'xlarge'} class:a11y-highlight-links={highlightLinks} class:a11y-hide-images={hideImages} class:a11y-dyslexia={dyslexiaMode} class:a11y-line-spacing={lineSpacing} class:a11y-aligned-text={alignedText}>
   <aside class="sidebar" aria-label="Panel lateral">
-    <a class="brand" href="/" onclick={(e) => { e.preventDefault(); go('overview'); }}>
-      <span class="brand-emblem"><img src="/sentrix-logo.png" alt="" /></span>
+    <a class="brand" href="/" aria-label="SentriX: ir al resumen general" onclick={(e) => { e.preventDefault(); go('overview'); }}>
+      <span class="brand-emblem"><img src="/sentrix-logo-192.png" alt="" /></span>
       <span class="brand-lockup"><strong>Sentri<span>X</span></strong><small>Sistema de vigilancia inteligente</small></span>
     </a>
     <div class="menu-label">ESPACIO DE TRABAJO</div>
     <nav aria-label="Navegación principal">
       {#each menu as item}
-        <button type="button" class:current={view === item.id} aria-current={view === item.id ? 'page' : undefined} onclick={() => go(item.id)}>
+        <button type="button" class:current={view === item.id} aria-current={view === item.id ? 'page' : undefined} aria-label={item.label} onclick={() => go(item.id)}>
           <span class="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>
         </button>
       {/each}
@@ -358,7 +430,7 @@
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">OPERACIONES <span>/</span> <strong>{menu.find((m) => m.id === view)?.label}</strong></div>
-      <div class="topbar-right"><button class="accessibility-trigger" type="button" aria-expanded={accessibilityOpen} aria-controls="accessibility-panel" onclick={() => accessibilityOpen = !accessibilityOpen}><span class="accessibility-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle class="person-head" cx="24" cy="13" r="3.4"/><path d="M13 20.5c4.5 2.6 17.5 2.6 22 0M24 17v12m0 0-8 9m8-9 8 9"/></svg></span><span>Accesibilidad</span></button><span class="server-label">São Paulo <i aria-hidden="true"></i> MediaMTX</span><span class="avatar" aria-label="Operador">OP</span><span class="operator">Operador</span></div>
+      <div class="topbar-right"><button class="accessibility-trigger" type="button" aria-expanded={accessibilityOpen} aria-controls="accessibility-panel" onclick={() => accessibilityOpen = !accessibilityOpen}><span class="accessibility-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle class="person-head" cx="24" cy="13" r="3.4"/><path d="M13 20.5c4.5 2.6 17.5 2.6 22 0M24 17v12m0 0-8 9m8-9 8 9"/></svg></span><span>Accesibilidad</span></button><span class="avatar" aria-label="Operador">OP</span><span class="operator">Operador</span></div>
     </header>
     {#if accessibilityOpen}
       <aside id="accessibility-panel" class="accessibility-panel" aria-label="Menú de accesibilidad">
@@ -423,8 +495,8 @@
             <h2>Estado del sistema</h2>
             <div class="system-overview-list">
               <div><span>Motor de inferencia</span><strong class:offline={!aiConnected}><i></i>{aiConnected ? 'En línea' : 'No disponible'}</strong></div>
-              <div><span>Fuente de video</span><strong class:offline={!sourceAvailable}><i></i>{sourceAvailable ? 'Disponible' : 'No disponible'}</strong></div>
-              <div><span>Procesamiento de video</span><strong class:offline={!aiReceiving}><i></i>{aiReceiving ? 'Operativo' : 'Detenido'}</strong></div>
+              <div><span>Fuente de video</span><strong class:offline={!sourceAvailable && !isPending(source)} class:waiting={isPending(source)}><i></i>{isPending(source) ? 'Esperando worker' : sourceAvailable ? 'Disponible' : 'No disponible'}</strong></div>
+              <div><span>Procesamiento de video</span><strong class:offline={!aiReceiving && !isPending(source)} class:waiting={isPending(source)}><i></i>{isPending(source) ? sourceWorkerLabel(source) || 'Esperando worker' : aiReceiving ? sourceWorkerLabel(source) || 'Operativo' : 'Detenido'}</strong></div>
               <div><span>Actualización del panel</span><strong class:offline={!lastRefresh}><i></i>{lastRefresh ? 'Conectada' : 'Pendiente'}</strong></div>
             </div>
           </section>
@@ -443,7 +515,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Nombre / identificador</th><th scope="col">Origen</th><th scope="col">Estado de IA</th><th scope="col">Fecha de registro</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><strong>{cameraLabel(item)}</strong><small>{item.name}</small></td><td><span class="source-type">MediaMTX · WebRTC</span></td><td><span class="pill neutral">Registrada</span></td><td>{fmtDate(item.registeredAt)}</td><td><div class="table-actions"><button class="text-btn" onclick={() => selectCamera(item)}>Ver monitor</button><button class="text-btn" onclick={() => activateInference(item)} disabled={busy}>Reintentar IA</button><button class="text-btn destructive" onclick={() => deleteCamera(item)} disabled={busy}>Eliminar</button></div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><strong>{cameraLabel(item)}</strong><small>{item.name}</small></td><td><span class="source-type">MediaMTX · WebRTC</span></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill">{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td>{fmtDate(item.registeredAt)}</td><td><div class="table-actions"><button class="text-btn" onclick={() => selectCamera(item)}>Ver monitor</button><button class="text-btn" onclick={() => activateInference(item)} disabled={busy}>Reintentar IA</button><button class="text-btn destructive" onclick={() => deleteCamera(item)} disabled={busy}>Eliminar</button></div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -454,7 +526,7 @@
           <div class="camera-wall">
             {#each cameras as item (item.id)}
               <section class="surface camera-tile">
-                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id)} class="pill">{cameraIsOnline(item.id) ? 'En línea' : inferenceByCamera[item.id]?.available ? 'Conectada' : 'No disponible'}</span></div>
+                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill">{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span></div>
                 <div class="tile-stream">
                   <iframe src={item.url} title={`Video de ${item.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
                   <span class="source-mark" aria-hidden="true">SOURCE&nbsp;&nbsp;/&nbsp;&nbsp;CCTV</span>
@@ -469,7 +541,7 @@
         {:else}
           <div class="monitor-grid">
             <section class="surface stream-surface">
-              <div class="section-title"><div><h2>{cameraLabel(camera)}</h2><p>{camera.name} · MediaMTX · WebRTC</p></div><div class="stream-actions"><button class="text-btn" onclick={() => showPlayer = !showPlayer}>{showPlayer ? 'Ocultar' : 'Mostrar'}</button><a class="external" href={camera.url} target="_blank" rel="noopener noreferrer">Abrir original ↗</a></div></div>
+              <div class="section-title"><div><h2>{cameraLabel(camera)}</h2><p>{camera.name} · MediaMTX · WebRTC</p></div><div class="stream-actions"><button class="text-btn" onclick={() => showPlayer = !showPlayer}>{showPlayer ? 'Ocultar' : 'Mostrar'}</button><a class="external" href={camera.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir transmisión original de ${camera.name} en una nueva ventana`}>Abrir original ↗</a></div></div>
               <div class="stream">
                 {#if showPlayer}{#key camera.id}<iframe src={camera.url} title={`Video de ${camera.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>{/key}
                 {:else}<div class="stream-paused"><span>◉</span><strong>Reproductor oculto</strong><p>La inferencia continúa en el servidor mientras esté activa.</p></div>{/if}
@@ -491,26 +563,23 @@
 
       {:else if view === 'detections'}
         <section class="surface">
-          <div class="section-title"><div><h2>Historial de detecciones</h2><p>Resultados disponibles a través de FastAPI</p></div><span class="pill neutral">{filteredDetections.length} resultados</span></div>
+          <div class="section-title"><div><h2>Historial de detecciones</h2><p>Resultados paginados desde FastAPI; no se descargan durante el monitoreo.</p></div><span class="pill neutral">{detectionTotal ?? filteredDetections.length} resultados</span></div>
           <div class="filters"><label>Buscar acción<input placeholder="Buscar clasificación" bind:value={query} oninput={() => detectionPage = 1}/></label><label>Acción estimada<select bind:value={actionFilter} onchange={() => detectionPage = 1}><option value="all">Todas las acciones</option><option value="normal">Normal</option><option value="hurto">Hurto</option><option value="robo">Robo</option><option value="agresion_fisica">Agresión física</option><option value="vandalismo">Vandalismo</option></select></label><label>Desde<input type="date" bind:value={since} onchange={() => detectionPage = 1}/></label><label>Hasta<input type="date" bind:value={until} onchange={() => detectionPage = 1}/></label></div>
           <div class="table-scroll"><table><caption class="sr-only">Historial de detecciones</caption><thead><tr><th scope="col">Fecha y hora</th><th scope="col">Cámara</th><th scope="col">Acción estimada</th><th scope="col">Confianza</th></tr></thead><tbody>
             {#each paginatedDetections as detection, i (detection.id ?? `${detection.camera}-${detection.fecha_hora}-${i}`)}<tr><td>{fmtDate(detection.fecha_hora)}</td><td>{detection.camera ?? '—'}</td><td><strong>{labelClass(detection.clase)}</strong></td><td>{confidence(detection.confianza)}</td></tr>
-            {:else}<tr><td colspan="4" class="table-empty">{aiConnected ? 'No hay detecciones para los filtros seleccionados.' : 'Sin registros disponibles. Verifica la conexión con FastAPI.'}</td></tr>{/each}
+            {:else}<tr><td colspan="4" class="table-empty">{detectionsLoading ? 'Consultando detecciones…' : aiConnected ? 'No hay detecciones para los filtros seleccionados.' : 'Sin registros disponibles. Verifica la conexión con FastAPI.'}</td></tr>{/each}
           </tbody></table></div>
           {#if filteredDetections.length > 0}
             <nav class="log-pagination detection-pagination" aria-label="Paginación de detecciones">
-              <span>Mostrando {(currentDetectionPage - 1) * DETECTION_PAGE_SIZE + 1}–{Math.min(currentDetectionPage * DETECTION_PAGE_SIZE, filteredDetections.length)} de {filteredDetections.length} detecciones</span>
-              <div><button class="text-btn" onclick={() => detectionPage = Math.max(1, currentDetectionPage - 1)} disabled={currentDetectionPage === 1}>← Anterior</button><strong>Página {currentDetectionPage} de {detectionPageCount}</strong><button class="text-btn" onclick={() => detectionPage = Math.min(detectionPageCount, currentDetectionPage + 1)} disabled={currentDetectionPage === detectionPageCount}>Siguiente →</button></div>
+              <span>Mostrando {(currentDetectionPage - 1) * DETECTION_PAGE_SIZE + 1}–{Math.min((currentDetectionPage - 1) * DETECTION_PAGE_SIZE + filteredDetections.length, detectionTotal ?? filteredDetections.length)} de {detectionTotal ?? filteredDetections.length} detecciones</span>
+              <div><button class="text-btn" onclick={() => { detectionPage = Math.max(1, currentDetectionPage - 1); refreshDetections(); }} disabled={currentDetectionPage === 1}>← Anterior</button><strong>Página {currentDetectionPage} de {detectionPageCount}</strong><button class="text-btn" onclick={() => { detectionPage = Math.min(detectionPageCount, currentDetectionPage + 1); refreshDetections(); }} disabled={currentDetectionPage === detectionPageCount}>Siguiente →</button></div>
             </nav>
           {/if}
           <p class="footnote">Las detecciones de todas las cámaras se organizan en páginas de {DETECTION_PAGE_SIZE} registros.</p>
         </section>
 
       {:else if view === 'alerts'}
-        <section class="surface"><div class="section-title"><div><h2>Eventos confirmados</h2><p>Las alertas no equivalen a cada clasificación individual</p></div><span class="pill neutral">{alerts.length} eventos</span></div>
-          {#if alerts.length}<div class="event-list">{#each alerts as alert, i (alert.id ?? `${alert.fecha_hora}-${i}`)}<div class="event"><span class="event-symbol" aria-hidden="true">!</span><div><strong>{labelClass(alert.clase)}</strong><p>{fmtDate(alert.fecha_hora)} · {camera?.id ?? '—'}</p></div><span class="pill">{alert.status ?? 'Registrado'}</span></div>{/each}</div>
-          {:else}<div class="empty"><span class="placeholder-icon">◇</span><h3>No hay alertas confirmadas</h3><p>{aiConnected ? 'Cuando el sistema confirme un evento, aparecerá aquí.' : 'El servidor de inferencia debe estar disponible para consultar eventos.'}</p></div>{/if}
-        </section>
+        <AlertsView {alerts} loading={alertsLoading} error={alertsError} onRefresh={refreshAlerts} onDetail={showAlertDetail} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
 
       {:else if view === 'service'}
         <div class="stats performance-stats"><div class="stat"><small>Tiempo promedio</small><strong class="stat-word">{averageProcessingMs == null ? '—' : `${averageProcessingMs.toFixed(2)} ms`}</strong><span>{processingTimes.length} ejecuciones con tiempo registrado</span></div><div class="stat"><small>Tiempo mínimo</small><strong class="stat-word">{minimumProcessingMs == null ? '—' : `${minimumProcessingMs.toFixed(2)} ms`}</strong><span>Menor tiempo de los filtros actuales</span></div><div class="stat"><small>Tiempo máximo</small><strong class="stat-word">{maximumProcessingMs == null ? '—' : `${maximumProcessingMs.toFixed(2)} ms`}</strong><span>Mayor tiempo de los filtros actuales</span></div><div class="stat"><small>Errores registrados</small><strong>{filteredServiceLogs.filter((log) => String(log.level).toUpperCase() === 'ERROR').length}</strong><span>{filteredServiceLogs.length} registros visibles</span></div></div>
@@ -539,6 +608,10 @@
     <footer>SentriX <span>·</span> Centro de monitoreo <span class="footer-right">Prototipo de integración · MediaMTX + FastAPI</span></footer>
   </div>
 </div>
+
+{#if selectedAlert}
+  <AlertDetailDialog alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
+{/if}
 
 {#if modal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeRegistration(); }}>
@@ -580,24 +653,24 @@
   .workspace{flex:1;min-width:0;display:flex;flex-direction:column}
   .topbar{height:76px;padding:0 44px;background:white;border-bottom:1px solid #e6ebf2;display:flex;align-items:center;justify-content:space-between;gap:14px}
   .breadcrumb{color:#8392a6;letter-spacing:1.1px;font-size:10px;font-weight:750}.breadcrumb span{margin:0 11px;color:#c9d2df}.breadcrumb strong{color:#2f455f;letter-spacing:0;font-size:12px;font-weight:600}
-  .topbar-right{display:flex;align-items:center;gap:12px}.server-label{color:#6c7f96;font-size:12px}.server-label i{display:inline-block;background:#42b5a2;width:5px;height:5px;border-radius:50%;margin:0 6px 2px}.avatar{width:33px;height:33px;border-radius:50%;background:#d9e6f4;color:#2b5279;display:grid;place-items:center;font-size:11px;font-weight:800}.operator{font-size:12px;color:#506780}
+  .topbar-right{display:flex;align-items:center;gap:12px}.avatar{width:33px;height:33px;border-radius:50%;background:#d9e6f4;color:#2b5279;display:grid;place-items:center;font-size:11px;font-weight:800}.operator{font-size:12px;color:#506780}
   main{max-width:1390px;width:100%;margin:0 auto;padding:46px 48px 68px;flex:1}
   .page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:27px}.eyebrow{color:#6991ae;font-weight:800;letter-spacing:1.5px;font-size:10px}.page-head h1{margin:10px 0 7px;font-size:31px;letter-spacing:-.8px;line-height:1.2;font-weight:750}.subtitle{color:#7c8da2;margin:0;line-height:1.6;font-size:13px}
   .btn{border-radius:7px;padding:10px 15px;border:1px solid transparent;font-weight:650;font-size:12px;white-space:nowrap;transition:background .15s}.btn.primary{background:#1557a1;color:#fff}.btn.primary:hover{background:#0d447f}.btn.secondary{border-color:#d3deea;color:#2c4a6a;background:#fff}.btn.secondary:hover{background:#f1f6fa}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.full{width:100%;margin-top:17px}
   .surface,.stat{background:#fff;border:1px solid #e1e8f0;border-radius:10px;box-shadow:0 3px 14px #122c4a06}.surface{padding:25px}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:22px}.stat{min-height:155px;padding:24px;display:flex;flex-direction:column;justify-content:space-between}.stat small{color:#75869b;font-size:12px;font-weight:600}.stat strong{font-size:34px;letter-spacing:-.5px;color:#133c69;font-variant-numeric:tabular-nums}.stat .stat-word{font-size:20px;letter-spacing:-.3px}.stat span{font-size:11px;color:#91a0b2}
-  .section-title{display:flex;align-items:start;justify-content:space-between;gap:14px;margin-bottom:21px}.section-title h2{font-size:16px;margin:0;color:#1d3654;font-weight:750}.section-title p{font-size:12px;color:#8997a8;margin:6px 0 0}.pill{display:inline-flex;align-items:center;border-radius:5px;font-size:11px;font-weight:700;background:#fff4e8;color:#ac6a22;padding:6px 9px;white-space:nowrap}.pill.positive{background:#e5f6ef;color:#22835e}.pill.neutral{background:#eff3f8;color:#697f96}
+  .section-title{display:flex;align-items:start;justify-content:space-between;gap:14px;margin-bottom:21px}.section-title h2{font-size:16px;margin:0;color:#1d3654;font-weight:750}.section-title p{font-size:12px;color:#8997a8;margin:6px 0 0}.pill{display:inline-flex;align-items:center;border-radius:5px;font-size:11px;font-weight:700;background:#fff4e8;color:#ac6a22;padding:6px 9px;white-space:nowrap}.pill.positive{background:#e5f6ef;color:#22835e}.pill.neutral{background:#eff3f8;color:#697f96}.pill.waiting{background:#fff4de;color:#916000}
   .placeholder,.empty{text-align:center;padding:43px 22px;color:#788ca3}.placeholder p,.empty p{font-size:12px;line-height:1.65;max-width:340px;margin:9px auto 18px}.placeholder-icon{font-size:32px;color:#9caec2;display:block;margin-bottom:10px}.placeholder.compact{padding:22px 5px}.tiny{font-size:11px;color:#8799ab}
   .table-surface{padding:0}.table-surface .section-title{padding:24px 25px 0}.table-scroll{width:100%;overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}thead{background:#f6f8fb;color:#71849c;font-size:11px}th{padding:15px 19px;font-weight:750;white-space:nowrap}td{padding:19px;border-top:1px solid #edf1f6;color:#5c7289;vertical-align:middle}td strong{display:block;color:#25405d;font-weight:700}td small{display:block;color:#879bb0;margin-top:5px}.source-type{font-size:11px}.table-actions{display:flex;flex-wrap:wrap;gap:5px}.text-btn{border:1px solid #dce6ef;background:white;border-radius:5px;color:#215681;font-size:11px;font-weight:650;padding:7px 9px}.text-btn:hover{background:#eef6ff}.text-btn.destructive{color:#b64d55;border-color:#f2d7da}.text-btn:disabled{opacity:.5}.table-empty{text-align:center;color:#95a2b3;padding:45px 15px}.empty{padding:65px 20px}.empty h3{margin:0;color:#2c4966;font-size:16px}
   .monitor-grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(270px,.82fr);align-items:start;gap:21px}.monitor-aside{display:flex;flex-direction:column;gap:20px}.stream-surface{padding:20px}.stream{background:#061326;aspect-ratio:16/9;border-radius:7px;overflow:hidden}.stream iframe{width:100%;height:100%;border:0;display:block}.stream-paused{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6cce0}.stream-paused span{font-size:50px;color:#4e7ea5}.stream-paused p{font-size:12px;text-align:center;padding:0 20px}.stream-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#7c91a5;font-size:11px}.stream-footer>span{display:flex;align-items:center;gap:7px}.stream-footer .led{margin:0}.external{font-size:11px;color:#21609a;text-decoration:none;white-space:nowrap}.metric-list{display:flex;flex-direction:column}.metric-list>div{border-bottom:1px solid #eef1f5;padding:12px 0;display:flex;justify-content:space-between;gap:10px}.metric-list span{font-size:11px;color:#8596a9}.metric-list strong{font-size:12px;color:#32516c;text-align:right}.prediction-label{font-size:24px;font-weight:800;text-transform:capitalize;margin-top:24px;color:#1c557e}.prediction-confidence{display:flex;justify-content:space-between;gap:10px;padding:16px 0;color:#71879d;font-size:12px}.prediction-confidence strong{color:#1f8b68}
   .camera-wall{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px}.camera-tile{padding:17px 17px 18px;border-radius:13px}.camera-tile-head,.camera-tile-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.camera-tile-head{padding:3px 6px 17px}.camera-tile-head h2{margin:0;color:var(--sx-ink);font-size:17px}.camera-tile-head .pill{background:#edf3f8;color:#56708b}.camera-tile-head .pill.positive{background:#e5f6ef;color:#168267}
   .tile-stream{position:relative;aspect-ratio:16/9;background:#0d2a43;border-radius:9px;overflow:hidden}.tile-stream iframe{width:100%;height:100%;border:0;display:block}.source-mark{position:absolute;left:18px;top:15px;color:#71b0d4;font-size:9px;letter-spacing:1.5px;pointer-events:none;text-shadow:0 1px 2px #071a2c}
   .camera-tile-foot{padding:15px 4px 1px}.tile-detection{padding-left:10px;border-left:3px solid #e9ad43;color:#58738f;font-size:12px}.camera-tile-foot .btn{padding:9px 14px;font-size:12px}.stream-actions{display:flex;align-items:center;gap:12px}
-  .filters{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:13px;margin-bottom:22px}.filters label{display:flex;flex-direction:column;gap:9px;color:#415d78;font-size:11px;font-weight:700}.filters input,.filters select,.dialog input{width:100%;min-width:0;padding:11px 12px;border:1px solid #d7e1ec;border-radius:6px;background:#fff;color:#23415e;font-size:12px;outline:none}.filters input:focus,.filters select:focus,.dialog input:focus{border-color:#377ab4;box-shadow:0 0 0 3px #9bd5ff3d}.footnote{font-size:11px;color:#8b9aac;line-height:1.6;margin:18px 0 0}.event-list{display:flex;flex-direction:column}.event{display:flex;align-items:center;gap:15px;padding:17px 0;border-bottom:1px solid #ecf1f6}.event-symbol{background:#fff0eb;color:#b85a43;font-weight:800;width:36px;height:36px;display:grid;place-items:center;border-radius:7px}.event div{flex:1}.event strong{color:#2e4862;font-size:13px;text-transform:capitalize}.event p{color:#8194a7;font-size:11px;margin:5px 0}
+  .filters{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:13px;margin-bottom:22px}.filters label{display:flex;flex-direction:column;gap:9px;color:#415d78;font-size:11px;font-weight:700}.filters input,.filters select,.dialog input{width:100%;min-width:0;padding:11px 12px;border:1px solid #d7e1ec;border-radius:6px;background:#fff;color:#23415e;font-size:12px;outline:none}.filters input:focus,.filters select:focus,.dialog input:focus{border-color:#377ab4;box-shadow:0 0 0 3px #9bd5ff3d}.footnote{font-size:11px;color:#8b9aac;line-height:1.6;margin:18px 0 0}
   .banner{display:flex;align-items:center;gap:12px;padding:13px 16px;margin-bottom:21px;border:1px solid #eed9ce;border-radius:7px;font-size:12px;background:#fff7f2;color:#8c5038;overflow-wrap:anywhere}.banner strong{flex-shrink:0}.banner span{flex:1}.banner button{border:0;background:transparent;font-size:21px;color:inherit;margin-left:auto}.banner.success{border-color:#cbe9d9;background:#f1fbf6;color:#2e7255}
   footer{padding:19px 48px;background:#fff;border-top:1px solid #e6edf4;color:#95a4b4;font-size:10px}footer span{margin:0 7px}.footer-right{float:right}
   .modal-overlay{position:fixed;inset:0;background:#0b1c32a8;display:flex;justify-content:center;align-items:center;padding:18px;z-index:50}.dialog{background:white;width:100%;max-width:530px;border-radius:12px;padding:28px;box-shadow:0 25px 85px #07182f55;max-height:95vh;overflow:auto}.dialog-top{display:flex;justify-content:space-between;gap:15px}.dialog h2{font-size:24px;margin:8px 0}.dialog p{color:#8396aa;font-size:12px;margin:0 0 25px}.close{align-self:start;background:none;border:0;color:#8193a5;font-size:28px}.dialog form{display:flex;flex-direction:column;gap:9px}.dialog label{font-size:12px;color:#294760;font-weight:700;margin-top:10px}.dialog label span{color:#c34e56}.dialog input{font-size:13px;padding:12px}.dialog .form-help{margin:0;color:#657f99;font-size:11px;line-height:1.5}.info-note{background:#eff6fe;border:1px solid #d9e8f7;border-radius:7px;padding:15px;margin-top:14px}.info-note strong{font-size:12px;color:#265c90}.info-note p{margin:6px 0 0;line-height:1.6;color:#527394}.modal-actions{display:flex;justify-content:end;gap:9px;margin-top:19px}
   @media(max-width:1200px){main{padding:35px 26px 55px}.topbar{padding:0 26px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.monitor-grid{grid-template-columns:1fr}.monitor-aside{display:grid;grid-template-columns:1fr 1fr}.filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  @media(max-width:1050px){.sidebar{width:72px}.brand{padding:20px 14px;justify-content:center}.brand>span:nth-child(2),.menu-label,.nav-icon+span,.side-bottom{display:none}nav{padding:20px 8px}nav button{justify-content:center;padding:13px 9px}.nav-icon{font-size:21px}.topbar{height:64px}.operator,.server-label{display:none}}
+  @media(max-width:1050px){.sidebar{width:72px}.brand{padding:20px 14px;justify-content:center}.brand>span:nth-child(2),.menu-label,.nav-icon+span,.side-bottom{display:none}nav{padding:20px 8px}nav button{justify-content:center;padding:13px 9px}.nav-icon{font-size:21px}.topbar{height:64px}.operator{display:none}}
   @media(max-width:580px){.sidebar{width:58px}.brand{padding:14px 7px}.page-head{align-items:start;flex-direction:column}.page-head h1{font-size:25px}.stats{grid-template-columns:1fr 1fr}.stat{padding:16px;min-height:125px}.stat strong{font-size:27px}.stat .stat-word{font-size:15px}.monitor-aside{grid-template-columns:1fr}.filters{grid-template-columns:1fr}.stream-footer{flex-direction:column;align-items:start}main{padding:25px 13px}.surface{padding:17px}.topbar{padding:0 13px}.breadcrumb{font-size:8px}footer{padding:14px}.footer-right{display:none}.dialog{padding:20px}}
 
   /* Identidad visual SentriX: solo presentación, sin cambios de comportamiento. */
@@ -644,7 +717,7 @@
   .overview-table{font-size:13px}.overview-table thead{background:#f2f6fa}.overview-table th{padding:15px 18px}.overview-table td{padding:20px 18px;color:var(--sx-ink)}.overview-empty{text-align:center;color:#8194a8!important;padding:38px!important}
   .overview-bottom{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,1fr);gap:26px}.overview-bottom>.surface{border-radius:13px;padding:30px}
   .system-overview-list{margin-top:26px}.system-overview-list>div{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:17px 0;border-bottom:1px solid #e7edf3;font-size:14px}.system-overview-list>div:last-child{border-bottom:0}
-  .system-overview-list strong{display:flex;align-items:center;gap:10px;color:#0e8875;font-size:13px}.system-overview-list strong i{width:7px;height:7px;border-radius:50%;background:currentColor}.system-overview-list strong.offline{color:#a65255}
+  .system-overview-list strong{display:flex;align-items:center;gap:10px;color:#08705f;font-size:13px}.system-overview-list strong i{width:7px;height:7px;border-radius:50%;background:currentColor}.system-overview-list strong.offline{color:#a65255}.system-overview-list strong.waiting{color:#916000}
   .pending-alerts p{margin:25px 0 22px;color:var(--sx-ink);font-size:14px}.pending-alerts p strong{font-weight:500}.pending-alerts>span{display:block;color:#758ba4;font-size:12px;line-height:1.6}.overview-alert-button{margin-top:25px;background:var(--sx-blue);color:#fff;border-color:var(--sx-blue);font-size:13px;padding:12px 17px;box-shadow:0 4px 10px #075fd326}.overview-alert-button:hover{background:var(--sx-blue-hover);border-color:var(--sx-blue-hover);transform:translateY(-1px)}
 
   @media(max-width:1200px){.overview-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.camera-wall{gap:18px}}
@@ -672,5 +745,21 @@
   .accessibility-panel{position:fixed;z-index:70;top:0;right:0;width:min(430px,100vw);height:100dvh;overflow:auto;padding:0 18px 22px;background:#f1f4f8;color:#092650;box-shadow:-18px 0 44px #041b4352}.accessibility-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 -18px 16px;padding:21px 20px 18px;background:linear-gradient(135deg,#06275a,#075fd3);color:#fff}.a11y-kicker{margin:0 0 4px!important;color:#9fe9f7!important;font-size:10px!important;font-weight:800!important;letter-spacing:1.5px}.accessibility-panel h2{margin:0;font-size:21px;line-height:1.15}.a11y-close{width:44px;height:44px;border:2px solid #b9eafa;border-radius:50%;background:#0b4ead;color:#fff;font-size:33px;line-height:1}.a11y-intro{margin:0 3px 15px;color:#46627e;font-size:13px;line-height:1.45}.a11y-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.a11y-grid button{min-height:132px;padding:14px 10px;border:2px solid transparent;border-radius:13px;background:#fff;color:#092650;box-shadow:0 2px 7px #06275a10;font-weight:750;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center}.a11y-grid button>span{font-size:35px;line-height:1;font-family:Arial,sans-serif}.a11y-grid button strong{font-size:14px;line-height:1.15}.a11y-grid button small{color:#54718f;font-size:11px}.a11y-grid button:hover,.a11y-grid button.active{border-color:#075fd3;background:#f7fbff}.a11y-grid button.active{box-shadow:inset 0 0 0 1px #12d7f2}.a11y-reader-note{margin:15px 0;padding:13px 14px;border:1px solid #badce8;border-radius:10px;background:#e8f7fa}.a11y-reader-note strong{font-size:14px}.a11y-reader-note p{margin:5px 0 0;color:#365b70;font-size:12px;line-height:1.45}.a11y-reset{width:100%;min-height:48px;border:0;border-radius:10px;background:#075fd3;color:#fff;font-size:14px;font-weight:800}.a11y-reset span{font-size:22px;vertical-align:-2px;margin-right:6px}
   .shell.a11y-high-contrast{filter:contrast(1.25)}.shell.a11y-high-contrast .surface,.shell.a11y-high-contrast .stat,.shell.a11y-high-contrast .overview-stat{border-color:#000;box-shadow:none}.shell.a11y-high-contrast .sidebar{background:#000}.shell.a11y-high-contrast .btn.primary,.shell.a11y-high-contrast .overview-alert-button{background:#003f8f;color:#fff}.shell.a11y-reduced-motion *{animation:none!important;transition:none!important;scroll-behavior:auto!important}.shell.a11y-text-large{zoom:1.15}.shell.a11y-text-xlarge{zoom:1.3}.shell.a11y-highlight-links a:not(.brand){text-decoration:underline!important;text-decoration-thickness:2px!important;text-underline-offset:3px!important;color:#003f8f!important;font-weight:800}.shell.a11y-hide-images img:not(.accessibility-mark *){visibility:hidden}.shell.a11y-dyslexia{font-family:Verdana,Arial,sans-serif;letter-spacing:.04em;word-spacing:.08em}.shell.a11y-line-spacing p,.shell.a11y-line-spacing td{line-height:2!important;letter-spacing:.05em}.shell.a11y-aligned-text p,.shell.a11y-aligned-text td{text-align:left!important}
   @media(max-width:580px){.accessibility-trigger{font-size:0;padding:5px}.accessibility-trigger>span:last-child{display:none}.accessibility-panel{width:100vw}.shell.a11y-text-large,.shell.a11y-text-xlarge{zoom:1}}
+  /* Correcciones Lighthouse: contraste AA para texto secundario sobre fondos claros. */
+  .subtitle,.placeholder,.empty,.footnote,.tiny,.section-title p,.stat span,.table-empty,.overview-empty,.pending-alerts>span,.log-pagination,.dialog p { color:#4a6178; }
+  thead,.log-pagination strong { color:#38546f; }
+  .pill.neutral,.camera-tile-head .pill { color:#38546f; }
+  .side-bottom p { color:#d3e2f0; }
+  footer { color:#4a6178; }
+  .source-mark { color:#b9e7ff; }
+  .stream-footer,.metric-list span,.prediction-confidence { color:#526b84; }
+  .filters label,.log-filters label { color:#294b6a; }
+  .overview-stat>span { color:#4a6178; }
+  .overview-empty { color:#4a6178 !important; }
+  /* Logo: mostrar el emblema completo sin el recorte heredado del recurso grande. */
+  .brand-emblem { width:52px; height:52px; flex:0 0 52px; overflow:visible; }
+  .brand-emblem img { position:static; width:52px; height:52px; max-width:100%; object-fit:contain; }
+  @media(max-width:1050px){.brand-emblem{width:48px;height:48px;flex-basis:48px}.brand-emblem img{width:48px;height:48px}}
+  @media(max-width:580px){.brand-emblem{width:42px;height:42px;flex-basis:42px}.brand-emblem img{width:42px;height:42px}}
 </style>
 

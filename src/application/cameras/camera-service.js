@@ -1,5 +1,3 @@
-import { nextAvailableCameraNumber } from '#domain/camera/camera.js';
-
 export class CameraNotFoundError extends Error {}
 
 /**
@@ -21,24 +19,15 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
 
     /** @param {{ name: string, normalizedUrl: string, streamPath: string }} input */
     async register({ name, normalizedUrl, streamPath }) {
+      // El panel puede registrar fuentes aunque FastAPI/Neon no esté disponible.
       const cameras = await cameraRegistry.list();
       const number = nextAvailableCameraNumber(cameras);
-      const id = `camara${number}`;
-      const camera = {
-        id,
-        number,
-        name,
-        url: `${normalizedUrl}/`,
-        streamPath,
-        registeredAt: new Date().toISOString(),
-        enabled: true
-      };
-
+      const camera = { id: `camara${number}`, number, name, url: `${normalizedUrl}/`, streamPath, registeredAt: new Date().toISOString(), enabled: true };
       await cameraRegistry.save(camera);
 
       try {
         const source = await inferenceClient('/sources/start', {
-          method: 'POST', body: { source_id: id, stream_path: streamPath }
+          method: 'POST', body: { source_id: camera.id, stream_path: camera.streamPath ?? streamPath }
         });
         return { camera, inference: { available: true, source } };
       } catch (error) {
@@ -76,3 +65,4 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
     }
   };
 }
+import { nextAvailableCameraNumber } from '#domain/camera/camera.js';
