@@ -43,6 +43,7 @@ class Session:
     policy_epoch: int = 0
     last_policy_window: int = 0
     pending_alert_interruption: bool = False
+    active_alert: dict | None = None  # fila de la alerta abierta; solo cambia al abrir, cerrar o interrumpir
 
     def snapshot(self):
         return {"session_id": self.id, "source_id": self.source_id,
@@ -90,6 +91,7 @@ class WebRTCReceiver:
             await asyncio.to_thread(self.log_store.emit, event_type, message, **kwargs)
 
     async def interrupt_alert(self, session, reason):
+        session.active_alert = None
         if self.alert_store is not None:
             count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason)
             if count:

@@ -56,10 +56,14 @@ class WindowProcessor:
                     result = session.alert_policy.update(result, samples[-1][1])
                     if runtime.alert_store is not None and detection is not None:
                         event = None
-                        # Sin alerta activa ni cierre, apply solo consultaría: se evita ese acceso.
-                        if result["alert"]["active"] or result["alert"]["ended"]:
+                        # Solo abrir o cerrar cambia la alerta. apply bloquea la tabla alerts para todas las
+                        # cámaras, así que las ventanas intermedias usan la fila que se guardó al abrirla.
+                        if result["alert"]["started"] or result["alert"]["ended"]:
                             stage = "alert_storage"
                             event = await asyncio.to_thread(runtime.alert_store.apply, result, detection)
+                            session.active_alert = event if event and event["status"] == "active" else None
+                        elif result["alert"]["active"]:
+                            event = session.active_alert
                         result["alert"]["id"] = event["id"] if event else None
                         result["alert"]["status"] = event["status"] if event else None
                         if result["alert"]["started"] or result["alert"]["ended"]:
