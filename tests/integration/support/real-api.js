@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 export const apiUrl = String(process.env.INFERENCE_API_URL ?? '').replace(/\/$/, '');
 const apiKey = String(process.env.INFERENCE_API_KEY ?? '');
 
+export const streamUrls = (
+  process.env.E2E_STREAM_URLS ??
+  'https://184.194.94.182/camera01/,https://184.194.94.182/camera03/'
+)
+  .split(',')
+  .map((url) => url.trim())
+  .filter(Boolean);
+
 export function requireRealApiConfiguration() {
   assert.ok(apiUrl, 'Falta INFERENCE_API_URL en .env');
   assert.ok(apiKey, 'Falta INFERENCE_API_KEY en .env');
@@ -18,15 +26,3 @@ export async function realApi(path) {
   return { response, payload };
 }
 
-export function cameraRows(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.cameras)) return payload.cameras;
-  if (Array.isArray(payload?.items)) return payload.items;
-  return [];
-}
-
-export async function activeCamera() {
-  const { response, payload } = await realApi('/cameras');
-  assert.equal(response.status, 200, 'FastAPI no permitió consultar /cameras');
-  return cameraRows(payload).find((camera) => camera.enabled !== false) ?? null;
-}

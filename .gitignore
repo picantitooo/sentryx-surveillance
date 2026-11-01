@@ -1,8 +1,4 @@
-node_modules
-
-# Documentación fuera del repositorio de ejecución
-*.md
-/docs/
+node_modules/
 
 # Output
 .output
@@ -73,3 +69,7 @@ node_modules/
 .svelte-kit/
 build/
 data/*.json
+!data/.gitkeep
+.DS_Store
+playwright-report/
+test-results/

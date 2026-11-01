@@ -1,9 +1,12 @@
 // Persistencia local de cámaras para el prototipo Node/SvelteKit.
 // No es una base de datos multiusuario ni adecuada para serverless.
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
-const dataDir = join(process.cwd(), 'data');
+const configuredDataDir = String(process.env.CAMERA_DATA_DIR ?? '').trim();
+const dataDir = configuredDataDir
+  ? (isAbsolute(configuredDataDir) ? configuredDataDir : resolve(process.cwd(), configuredDataDir))
+  : join(process.cwd(), 'data');
 const camerasFile = join(dataDir, 'cameras.json');
 const legacyCameraFile = join(dataDir, 'camera.json');
 
