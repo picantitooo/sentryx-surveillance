@@ -132,10 +132,14 @@ inactiva, se abre otra automáticamente. No se guardan frames, clips ni video.
   provisionales: Hurto .50, Robo .60, Agresión física .60, Vandalismo .55. Guarda detección de
   apertura y cierre, timestamps, duración y estado `active`/`closed`/`interrupted`.
   Desconexiones, fallos, ventanas perdidas y reinicios interrumpen el evento sin inventar un regreso
-  a Normal. La tabla solo se consulta cuando hay una alerta activa o se cierra.
+  a Normal; una alerta interrumpida termina en la última ventana guardada antes del corte, así que
+  también tiene fin y duración. La tabla solo se consulta al abrir o cerrar una alerta.
 - **TA-4, `inference_logs`:** inicio y cierre del servicio, carga del modelo, conexiones de fuentes,
   errores e inferencias con `processing_ms` e `inference_ms`. Un fallo al guardar logs no detiene
-  la inferencia. No hay limpieza automática.
+  la inferencia.
+- **Retención:** con `SENTRIX_RETENTION_DAYS=N` (rol `all` o `api`) se borran cada hora las detecciones
+  Normal que no abren ni cierran una alerta y los logs `inference_completed` con más de N días. Las
+  alertas, sus detecciones y los demás eventos se conservan. Por defecto 7 días; `0` la desactiva.
 
 ### Migraciones
 
@@ -143,7 +147,7 @@ inactiva, se abre otra automáticamente. No se guardan frames, clips ni video.
 restricciones del código. Ejecutarlos una vez sobre la base de operación, por ejemplo:
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import psycopg,pathlib,dotenv; u=dotenv.dotenv_values('backend/.env')['SENTRIX_DATABASE_URL']; c=psycopg.connect(u, autocommit=True); c.execute(pathlib.Path('backend/migrations/2026-10-28_restricciones_integridad.sql').read_text(encoding='utf-8')); print('ok')"
+.\.venv\Scripts\python.exe -c "import psycopg,pathlib,dotenv; u=dotenv.dotenv_values('backend/.env')['SENTRIX_DATABASE_URL']; c=psycopg.connect(u, autocommit=True); c.execute(pathlib.Path('backend/migrations/2026-10-31_integridad_e_indices.sql').read_text(encoding='utf-8')); print('ok')"
 ```
 
 ## Pruebas

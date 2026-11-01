@@ -79,6 +79,23 @@ class InferenceLogStore:
             logger.error("No se pudo persistir el log de inferencia", exc_info=True)
             return None
 
+    def purge(self, before, batch=5000):
+        """Borra los logs `inference_completed` anteriores a `before`; los demás eventos se conservan."""
+        cutoff = before.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        removed = 0
+        while True:
+            connection = self.connect()
+            try:
+                with connection:
+                    count = connection.execute("""DELETE FROM inference_logs WHERE id IN (
+                        SELECT id FROM inference_logs WHERE event_type = 'inference_completed'
+                        AND fecha_hora < ? LIMIT ?)""", (cutoff, batch)).rowcount
+            finally:
+                connection.close()
+            removed += count
+            if count < batch:
+                return removed
+
     def get(self, identifier):
         connection = self.connect()
         try:

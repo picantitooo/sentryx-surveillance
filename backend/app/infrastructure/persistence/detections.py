@@ -38,6 +38,10 @@ class DetectionStore:
             timestamp REAL NOT NULL CHECK(timestamp >= 0), simulated INTEGER NOT NULL,
             session_id TEXT, window_id TEXT, probabilities TEXT
         )""")
+        # Índices de las consultas reales: listado por fecha (con y sin cámara) y fin de alertas por sesión.
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_detections_camera_fecha ON detections(camera, fecha_hora)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_detections_fecha_hora ON detections(fecha_hora)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_detections_session_id ON detections(session_id)")
 
     @staticmethod
     def decode(row):

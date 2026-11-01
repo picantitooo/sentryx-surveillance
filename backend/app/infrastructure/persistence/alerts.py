@@ -19,6 +19,15 @@ def _retry_transaction(operation):
                 time.sleep(.05 * (attempt + 1))
     return run
 
+def _interrupt_sql(bounded):
+    # Una alerta interrumpida termina en la última ventana guardada de su sesión, para que el evento
+    # (y su clip) tenga fin y duración sin la ventana Normal de cierre. Con `bounded` se excluyen las
+    # ventanas posteriores al corte (p. ej. la que llegó después de un window_gap).
+    end = ("(SELECT MAX(d.timestamp) FROM detections d WHERE d.session_id = alerts.session_id"
+           + (" AND d.timestamp <= ?" if bounded else "") + ")")
+    return ("UPDATE alerts SET status='interrupted', interruption_reason=?, fecha_hora_fin=?, "
+            f"timestamp_fin={end}, duracion_segundos={end} - timestamp_inicio WHERE status='active'")
+
 class AlertStore(DetectionStore):
     def _create_schema(self, connection):
         super()._create_schema(connection)
@@ -32,6 +41,9 @@ class AlertStore(DetectionStore):
             UNIQUE(detection_id)
         )""")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_session ON alerts(session_id) WHERE status = 'active'")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_camera_fecha ON alerts(camera, fecha_hora)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_fecha_hora ON alerts(fecha_hora)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status)")
         connection.execute("CREATE TABLE IF NOT EXISTS closed_alert_sessions (session_id TEXT PRIMARY KEY)")
 
     @staticmethod
@@ -74,16 +86,17 @@ class AlertStore(DetectionStore):
             connection.close()
 
     @_retry_transaction
-    def interrupt(self, session_id=None, reason="service_restarted"):
+    def interrupt(self, session_id=None, reason="service_restarted", end_timestamp=None):
         connection = self.connect()
         try:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 if session_id is not None and reason == "source_disconnected":
                     connection.execute("INSERT OR IGNORE INTO closed_alert_sessions VALUES (?)", (session_id,))
-                cursor = connection.execute("UPDATE alerts SET status='interrupted', interruption_reason=?, fecha_hora_fin=?"
-                    " WHERE status='active'" + (" AND session_id=?" if session_id is not None else ""),
-                    (reason, self.now(), session_id) if session_id is not None else (reason, self.now()))
+                bounded = end_timestamp is not None
+                cursor = connection.execute(_interrupt_sql(bounded) + (" AND session_id=?" if session_id is not None else ""),
+                    (reason, self.now(), *((end_timestamp,) * 2 if bounded else ()),
+                     *((session_id,) if session_id is not None else ())))
                 return cursor.rowcount
         finally:
             connection.close()
@@ -95,12 +108,30 @@ class AlertStore(DetectionStore):
         try:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                cursor = connection.execute("UPDATE alerts SET status='interrupted', interruption_reason=?, "
-                                            "fecha_hora_fin=? WHERE status='active' AND camera=?",
-                                            (reason, self.now(), camera))
+                cursor = connection.execute(_interrupt_sql(False) + " AND camera=?", (reason, self.now(), camera))
                 return cursor.rowcount
         finally:
             connection.close()
+
+    def purge_detections(self, before, batch=5000):
+        """Borra detecciones Normal anteriores a `before` que no abren ni cierran ninguna alerta."""
+        cutoff = before.astimezone(timezone.utc).isoformat()
+        removed = 0
+        while True:
+            connection = self.connect()
+            try:
+                # Lotes cortos: cada uno es una transacción breve y no frena las escrituras en vivo.
+                with connection:
+                    count = connection.execute("""DELETE FROM detections WHERE id IN (
+                        SELECT d.id FROM detections d WHERE d.clase = 'Normal' AND d.fecha_hora < ?
+                        AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.detection_id = d.id)
+                        AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.end_detection_id = d.id)
+                        LIMIT ?)""", (cutoff, batch)).rowcount
+            finally:
+                connection.close()
+            removed += count
+            if count < batch:
+                return removed
 
     def get(self, identifier):
         connection = self.connect()

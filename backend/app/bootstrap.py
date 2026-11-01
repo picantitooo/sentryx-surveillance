@@ -22,6 +22,7 @@ from app.application.ports import Predictor
 from app.application.inference import InferenceService
 from app.application.queries import RecordQueries
 from app.application.cameras import CameraService
+from app.application.retention import Retention
 from app.application.errors import ApplicationError, InvalidInput, InvalidOffer, NotFound, Conflict, Unavailable
 from app.infrastructure.inference.mock import MockPredictor
 from app.infrastructure.persistence.cameras import CameraStore
@@ -96,6 +97,11 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     camera_service = (CameraService(CameraStore(store.path), sources or receiver, receiver.default_camera,
                                     receiver.lock)
                       if selected_transport == "rtsp" else None)
+    # La API (o el proceso all) limpia los datos viejos; los workers no, para no repetir el trabajo.
+    retention_days = float(os.getenv("SENTRIX_RETENTION_DAYS", "7") or 0)
+    retention = (Retention(alert_store, log_store, days=retention_days,
+                           interval=float(os.getenv("SENTRIX_RETENTION_INTERVAL", "3600")))
+                 if retention_days > 0 and role != "worker" else None)
     @asynccontextmanager
     async def lifespan(app):
         if database_url:
@@ -140,6 +146,8 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 background.append(asyncio.create_task(sources.run()))
             if coordinator is not None:
                 background.append(asyncio.create_task(coordinator.run()))
+            if retention is not None:
+                background.append(asyncio.create_task(retention.run()))
             await asyncio.to_thread(log_store.emit, "service_started", "Servicio de inferencia iniciado" +
                                     ("" if role == "all" else f" (rol {role}" +
                                      (f", worker {worker_id})" if worker_id else ")")))

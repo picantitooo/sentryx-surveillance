@@ -72,6 +72,8 @@ class WindowProcessor:
                                 session=session, window_id=window_id, detection_id=detection["id"])
                     session.policy_epoch = epoch
                     session.last_policy_window = number
+                    if detection is not None:
+                        session.last_window_timestamp = detection["timestamp"]
                 session.latest_result = {
                     **result, "session_id": session.id, "source_id": session.source_id,
                     **({"detection_id": detection["id"]} if detection else {}),

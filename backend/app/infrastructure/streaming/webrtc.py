@@ -35,6 +35,8 @@ class Session:
     processing_errors: int = 0
     processing: bool = False
     latest_result: dict | None = None
+    # Timestamp de la última ventana guardada que pasó por la política (fin de una alerta interrumpida).
+    last_window_timestamp: float | None = None
     last_error: str | None = None
     relay: MediaRelay = field(default_factory=MediaRelay)
     source_track: object = None
@@ -93,7 +95,9 @@ class WebRTCReceiver:
     async def interrupt_alert(self, session, reason):
         session.active_alert = None
         if self.alert_store is not None:
-            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason)
+            # El evento termina en la última ventana procesada antes del corte.
+            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason,
+                                            session.last_window_timestamp)
             if count:
                 await self.log_event("alert_interrupted", "Evento interrumpido: " + reason,
                                      session=session, level="WARNING")

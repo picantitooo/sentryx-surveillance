@@ -18,7 +18,11 @@ def test_restart_recovers_open_alert_and_preserves_history(backend_server):
     recovered = client.get(f"/alerts/{before['id']}").json()
     assert recovered["status"] == "interrupted"
     assert recovered["interruption_reason"] == "service_restarted"
-    assert recovered["timestamp_fin"] is None
-    assert {row["id"] for row in client.get("/detections", params={"camera": identifier}).json()} == detection_ids
+    detections = client.get("/detections", params={"camera": identifier}).json()
+    assert {row["id"] for row in detections} == detection_ids
+    # Tras un corte abrupto el evento termina en la última ventana guardada de su sesión.
+    assert recovered["timestamp_fin"] == max(row["timestamp"] for row in detections
+                                             if row["session_id"] == before["session_id"])
+    assert recovered["duracion_segundos"] == recovered["timestamp_fin"] - recovered["timestamp_inicio"]
     assert client.get(f"/sources/{identifier}/status").json()["active"] is False
     assert client.get("/alerts", params={"camera": identifier, "status": "active"}).json()["total"] == 0
