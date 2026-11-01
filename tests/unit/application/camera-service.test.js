@@ -6,7 +6,7 @@ function registry(cameras = []) {
   return {
     list: async () => cameras,
     get: async (id) => cameras.find((camera) => camera.id === id) ?? null,
-    save: async (camera) => { cameras.push(camera); return camera; },
+    register: async (camera) => { cameras.push(camera); return { ...camera, number: cameras.length, registeredAt: '2026-10-31T00:00:00.000Z', enabled: true }; },
     remove: async (id) => {
       const index = cameras.findIndex((camera) => camera.id === id);
       if (index >= 0) cameras.splice(index, 1);
@@ -14,7 +14,7 @@ function registry(cameras = []) {
   };
 }
 
-test('registra en el repositorio e inicia su fuente con el ID devuelto', async () => {
+test('persiste en el repositorio y usa el ID de la cámara registrada', async () => {
   const calls = [];
   const cameras = [];
   const inferenceClient = async (path, options = {}) => {

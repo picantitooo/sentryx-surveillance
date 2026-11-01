@@ -61,11 +61,11 @@ export async function getRegisteredCamera(id) {
 /**
  * Registra la cámara en FastAPI/Neon. El backend asigna el identificador,
  * la fecha de registro y cualquier numeración que corresponda.
- * @param {{ name: string, streamPath: string }} camera
+ * @param {{ id: string, name: string, streamPath: string }} camera
  */
 export async function registerCamera(camera) {
   const payload = await callInference('/cameras', {
-    method: 'POST', body: { name: camera.name, stream_path: camera.streamPath }
+    method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
   });
   return mapCamera(payload?.camera ?? payload);
 }
