@@ -59,15 +59,24 @@ export async function getRegisteredCamera(id) {
 }
 
 /**
- * Registra la cámara en FastAPI/Neon. El backend asigna el identificador,
- * la fecha de registro y cualquier numeración que corresponda.
+ * Registra la cámara en FastAPI/Neon. Durante TA-10 el backend genera el
+ * source_id; la segunda solicitud mantiene compatibilidad con el contrato anterior.
  * @param {{ id: string, name: string, streamPath: string }} camera
  */
 export async function registerCamera(camera) {
-  const payload = await callInference('/cameras', {
-    method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
-  });
-  return mapCamera(payload?.camera ?? payload);
+  try {
+    const payload = await callInference('/cameras', {
+      method: 'POST', body: { name: camera.name, stream_path: camera.streamPath }
+    });
+    return mapCamera(payload?.camera ?? payload);
+  } catch (error) {
+    // El backend previo a TA-10 responde 422 porque source_id sigue siendo obligatorio.
+    if (!/\b422\b/.test(error instanceof Error ? error.message : String(error))) throw error;
+    const payload = await callInference('/cameras', {
+      method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
+    });
+    return mapCamera(payload?.camera ?? payload);
+  }
 }
 
 /** @param {string} id */

@@ -19,7 +19,7 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
 
     /** @param {{ name: string, normalizedUrl: string, streamPath: string }} input */
     async register({ name, normalizedUrl, streamPath }) {
-      // El ID se calcula a partir del inventario, pero la cámara se persiste en FastAPI/Neon.
+      // Se prepara un ID de compatibilidad; TA-10 lo ignorará y generará source_id en backend.
       const cameras = await cameraRegistry.list();
       const number = nextAvailableCameraNumber(cameras);
       const id = `camara${number}`;
