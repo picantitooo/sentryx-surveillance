@@ -11,12 +11,12 @@
 
   type ViewId = 'overview' | 'monitor' | 'cameras' | 'detections' | 'alerts' | 'service';
   type LogLevel = 'all' | 'INFO' | 'WARNING' | 'ERROR' | 'DEBUG' | 'CRITICAL';
-  interface Camera { id: string; number?: number; name: string; url: string; streamPath?: string; registeredAt: string; }
+  interface Camera { id: string; number?: number; name: string; url: string; streamPath?: string; registeredAt: string; active?: boolean; }
   interface Detection { id?: string; camera?: string; fecha_hora?: string; created_at?: string; clase?: string; class_name?: string; confianza?: number; processing_ms?: number; status?: string; }
   interface Alert extends Detection { timestamp_inicio?: string; timestamp_fin?: string; fecha_hora_fin?: string; duracion_segundos?: number; interruption_reason?: string; threshold?: number; }
   interface AlertListResponse { items?: Alert[]; total?: number; limit?: number; offset?: number; }
   interface ClipResponse { status?: 'recording' | 'ready' | 'partial' | 'missing'; url?: string | null; duration_seconds?: number | null; }
-  interface LatestResult { processing_ms?: number; }
+  interface LatestResult extends Detection { processing_ms?: number; anomaly_score?: number; alert?: { incident?: boolean; closing?: boolean; }; }
   interface InferenceSource { status?: string; worker_id?: string | null; status_age_seconds?: number | null; frames_received?: number; windows_processed?: number; last_frame_age_seconds?: number | null; latest_result?: LatestResult; }
   interface InferenceResponse { available: boolean; source: InferenceSource | null; latestDetection?: Detection | null; detections?: Detection[]; alerts?: Alert[]; error?: string; }
   interface DashboardResponse { available: boolean; sources?: Record<string, InferenceSource>; alerts?: Alert[]; error?: string; }
@@ -44,6 +44,7 @@
   ];
   let view = $state<ViewId>('overview');
   let modal = $state(false);
+  let editingCamera = $state<Camera | null>(null);
   let cameras = $state<Camera[]>([]);
   let selectedId = $state('');
   let inference = $state<InferenceResponse | null>(null);
@@ -85,6 +86,7 @@
   let clip = $state<ClipResponse | null>(null);
   let clipLoading = $state(false);
   let clipError = $state('');
+  let clipPollTimer: ReturnType<typeof setTimeout> | null = null;
   let logLevel = $state<LogLevel>('all');
   let logCamera = $state('all');
   let logQuery = $state('');
@@ -140,6 +142,9 @@
   let minimumProcessingMs = $derived(processingTimes.length ? Math.min(...processingTimes) : null);
   let maximumProcessingMs = $derived(processingTimes.length ? Math.max(...processingTimes) : null);
   let latestProcessingMs = $derived(source?.latest_result?.processing_ms ?? latest?.processing_ms ?? null);
+  let liveAnomalyScore = $derived(source?.latest_result?.anomaly_score ?? null);
+  let liveIncident = $derived(source?.latest_result?.alert?.incident === true);
+  let liveClosing = $derived(source?.latest_result?.alert?.closing === true);
   let activeCameraCount = $derived(cameras.filter((item) => {
     const result = inferenceByCamera[item.id];
     return result?.available === true && isSourceReceiving(result.source);
@@ -171,9 +176,10 @@
   let cameraCoverage = $derived(cameras.length ? Math.round((activeTransmissionCount / cameras.length) * 100) : 0);
   let attentionCameras = $derived(cameras.filter((item) => !cameraIsOnline(item.id)));
   let dashboardSamples = $derived(dashboardDetections.length ? dashboardDetections : overviewDetections);
+  let todayDashboardSamples = $derived(dashboardSamples.filter((detection) => peruDateKey(detection.fecha_hora ?? detection.created_at) === todayKey));
   let detectionDistribution = $derived.by(() => {
     const counts = new Map<string, number>();
-    for (const detection of dashboardSamples) {
+    for (const detection of todayDashboardSamples) {
       const name = labelClass(detection.clase ?? detection.class_name);
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
@@ -192,7 +198,7 @@
     }).join(', ');
   });
   let hourlyActivity = $derived.by(() => Array.from({ length: 24 }, (_, hour) => {
-    const count = dashboardSamples.filter((detection) => new Date(detection.fecha_hora ?? detection.created_at ?? 0).getHours() === hour).length;
+    const count = todayDashboardSamples.filter((detection) => peruHour(detection.fecha_hora ?? detection.created_at) === hour).length;
     return { hour, count };
   }));
   let hourlyMaximum = $derived(Math.max(1, ...hourlyActivity.map((item) => item.count)));
@@ -203,6 +209,15 @@
   let paginatedMonitorCameras = $derived(cameras.slice((currentMonitorPage - 1) * MONITOR_PAGE_SIZE, currentMonitorPage * MONITOR_PAGE_SIZE));
 
   function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
+  function peruDateKey(value: string | undefined) {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(date) : '';
+  }
+  function peruHour(value: string | undefined) {
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return -1;
+    return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Lima', hour: '2-digit', hourCycle: 'h23' }).format(date));
+  }
   async function getJSON<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, options);
     const data = await response.json().catch(() => ({})) as T & ErrorPayload;
@@ -253,7 +268,7 @@
         next[item.id] = { available: snapshot.available, source, latestDetection, detections: latestDetection ? [{ ...latestDetection, camera: item.id }] : [], alerts: [] };
       }
       inferenceByCamera = next;
-      activeAlertsSummary = snapshot.alerts ?? [];
+      activeAlertsSummary = (snapshot.alerts ?? []).map(normalizeAlertTiming);
     } catch (e) {
       inferenceByCamera = Object.fromEntries(cameras.map((item) => [item.id, { available: false, source: null, alerts: [], detections: [], error: errorMessage(e) }]));
       activeAlertsSummary = [];
@@ -310,7 +325,7 @@
     if (!options.force) {
       const cached = readOperationalCache<AlertListResponse>(cacheKey);
       if (cached) {
-        allAlerts = cached.items ?? [];
+        allAlerts = (cached.items ?? []).map(normalizeAlertTiming);
         alertTotal = cached.total ?? null;
         return;
       }
@@ -319,7 +334,7 @@
     try {
       const offset = (alertPage - 1) * ALERT_PAGE_SIZE;
       const data = await getJSON<AlertListResponse>(`/api/alerts?limit=${ALERT_PAGE_SIZE}&offset=${offset}`);
-      allAlerts = data.items ?? [];
+      allAlerts = (data.items ?? []).map(normalizeAlertTiming);
       alertTotal = data.total ?? null;
       writeOperationalCache(cacheKey, data);
     } catch (e) {
@@ -327,17 +342,32 @@
       alertsError = errorMessage(e);
     } finally { alertsLoading = false; }
   }
+  function stopClipPolling() {
+    if (clipPollTimer !== null) clearTimeout(clipPollTimer);
+    clipPollTimer = null;
+  }
+  async function loadClip(alertId: string) {
+    try {
+      clip = await getJSON<ClipResponse>(`/api/alerts/${encodeURIComponent(alertId)}/clip`);
+      if (clip.status === 'recording') {
+        stopClipPolling();
+        clipPollTimer = setTimeout(() => {
+          if (selectedAlert?.id === alertId) loadClip(alertId);
+        }, 5_000);
+      }
+    } catch (e) { clipError = errorMessage(e); }
+  }
   async function showAlertDetail(alert: Alert) {
-    selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
+    stopClipPolling(); selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
     try {
       const detail = alert.id ? await getJSON<Alert>(`/api/alerts/${encodeURIComponent(alert.id)}`) : alert;
-      selectedAlert = detail;
-      if (detail.id) clip = await getJSON<ClipResponse>(`/api/alerts/${encodeURIComponent(detail.id)}/clip`);
+      selectedAlert = normalizeAlertTiming(detail);
+      if (detail.id) await loadClip(detail.id);
       else clip = { status: 'missing', url: null };
     } catch (e) { clipError = errorMessage(e); }
     finally { clipLoading = false; }
   }
-  function closeAlertDetail() { selectedAlert = null; clip = null; clipError = ''; }
+  function closeAlertDetail() { stopClipPolling(); selectedAlert = null; clip = null; clipError = ''; }
   onMount(() => {
     let mounted = true;
     let fetching = false;
@@ -373,17 +403,29 @@
     try {
       const parsedUrl = new URL(url.trim());
       if (parsedUrl.protocol !== 'https:') throw new Error('La dirección de la cámara debe utilizar HTTPS. Ejemplo: https://servidor/camera01/');
-      const data = await getJSON<RegisterCameraResponse>('/api/camera', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
-      });
-      cameras = [...cameras, data.camera];
-      clearOperationalCache();
-      selectedId = data.camera.id;
-      notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
-      if (data.inference?.error) error = data.inference.error;
+      if (editingCamera) {
+        const data = await getJSON<RegisterCameraResponse>(`/api/camera?id=${encodeURIComponent(editingCamera.id)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
+        });
+        cameras = cameras.map((item) => item.id === editingCamera?.id ? data.camera : item);
+        clearOperationalCache();
+        selectedId = data.camera.id;
+        notice = data.inference?.available === false ? 'Cámara actualizada, pero no se pudo reiniciar el análisis.' : 'Cámara actualizada y análisis reiniciado.';
+        if (data.inference?.error) error = data.inference.error;
+      } else {
+        const data = await getJSON<RegisterCameraResponse>('/api/camera', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
+        });
+        cameras = [...cameras, data.camera];
+        clearOperationalCache();
+        selectedId = data.camera.id;
+        notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
+        if (data.inference?.error) error = data.inference.error;
+      }
       modal = false; view = 'cameras'; showPlayer = true;
-      name = ''; url = '';
-      await refreshInference(data.camera.id);
+      const updatedId = editingCamera?.id ?? selectedId;
+      editingCamera = null; name = ''; url = '';
+      await refreshInference(updatedId);
     } catch (e) { error = errorMessage(e); }
     finally { busy = false; }
   }
@@ -417,15 +459,31 @@
     } catch (e) { error = errorMessage(e); }
     finally { busy = false; }
   }
-  function fmtDate(value: string | Date | null | undefined) {
-    if (!value) return '—';
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('es-PE', { timeZone: 'America/Lima', dateStyle: 'short', timeStyle: 'medium' });
+  function toDate(value: unknown): Date | null {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+    const date = Number.isFinite(numeric)
+      ? new Date(Math.abs(numeric) < 100_000_000_000 ? numeric * 1_000 : numeric)
+      : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date;
   }
-  function fmtTime(value: string | Date | null | undefined) {
-    if (!value) return '—';
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('es-PE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  function validEventDate(value: unknown): string | null {
+    const date = toDate(value);
+    return date && date.getUTCFullYear() >= 2020 ? date.toISOString() : null;
+  }
+  function normalizeAlertTiming(alert: Alert): Alert {
+    const start = validEventDate(alert.timestamp_inicio) ?? validEventDate(alert.fecha_hora) ?? validEventDate(alert.created_at);
+    const end = validEventDate(alert.timestamp_fin) ?? validEventDate(alert.fecha_hora_fin);
+    return { ...alert, timestamp_inicio: start ?? undefined, timestamp_fin: end ?? undefined };
+  }
+  function fmtDate(value: unknown) {
+    const d = toDate(value);
+    return d ? d.toLocaleString('es-PE', { timeZone: 'America/Lima', dateStyle: 'short', timeStyle: 'medium' }) : '—';
+  }
+  function fmtTime(value: unknown) {
+    const d = toDate(value);
+    return d ? d.toLocaleTimeString('es-PE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—';
   }
   function confidence(value: unknown) {
     const n = Number(value);
@@ -468,12 +526,18 @@
   function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
     openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    clearFeedback(); name = ''; url = ''; modal = true;
+    clearFeedback(); editingCamera = null; name = ''; url = ''; modal = true;
+    await tick();
+    dialogElement?.querySelector<HTMLElement>('[data-dialog-initial-focus]')?.focus();
+  }
+  async function showEditCamera(item: Camera, event?: MouseEvent) {
+    openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    clearFeedback(); editingCamera = item; name = item.name; url = item.url; modal = true;
     await tick();
     dialogElement?.querySelector<HTMLElement>('[data-dialog-initial-focus]')?.focus();
   }
   function closeRegistration() {
-    modal = false;
+    modal = false; editingCamera = null;
     tick().then(() => openerElement?.focus());
   }
   function saveAccessibilityPreferences() {
@@ -593,14 +657,14 @@
           </section>
           <div class="overview-analytics">
             <section class="surface distribution-card">
-              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Muestra reciente</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Hoy · últimas 100 disponibles</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
               {#if distributionTotal}
                 <div class="distribution-content"><div class="donut" style={`background:conic-gradient(${distributionGradient})`}><div><strong>{distributionTotal}</strong><span>registros</span></div></div><div class="distribution-legend">{#each detectionDistribution as [type, count], index (type)}<div><i class={`legend-${index}`}></i><span>{type}</span><strong>{count}</strong></div>{/each}</div></div>
               {:else}<div class="chart-empty">Aún no hay detecciones recientes para clasificar.</div>{/if}
             </section>
             <section class="surface hourly-card">
-              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Muestra reciente</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
-              {#if dashboardSamples.length}<div class="hour-chart" aria-label="Actividad de detecciones por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} detecciones`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay actividad reciente para graficar.</div>{/if}
+              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Hoy · horario de Lima</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              {#if todayDashboardSamples.length}<div class="hour-chart" aria-label="Actividad de detecciones por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} detecciones`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay detecciones de hoy para graficar.</div>{/if}
             </section>
           </div>
         </div>
@@ -632,7 +696,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Registro</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions"><button class="text-btn monitor-action" onclick={() => selectCamera(item)}>Ver monitor</button><button class="text-btn" onclick={() => activateInference(item)} disabled={busy}>Reintentar IA</button><button class="text-btn destructive" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`}>Eliminar</button></div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -673,12 +737,12 @@
             </section>
             <div class="monitor-aside">
               <section class="surface"><div class="section-title"><div><h2>Inteligencia artificial</h2><p>Estado de FastAPI</p></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
-                <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Ventanas procesadas</span><strong>{source?.windows_processed ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
+                <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Estado del incidente</span><strong class:positive={liveIncident} class:offline={!liveIncident && !liveClosing} class:waiting={liveClosing}><i></i>{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</strong></div><div><span>Puntaje de anomalía VadCLIP</span><strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
                 <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar IA'}</button>
               </section>
-              <section class="surface"><div class="section-title"><div><h2>Predicción reciente</h2><p>Resultado de la última ventana</p></div></div>
-                {#if latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence">Confianza <strong>{confidence(latest.confianza)}</strong></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
-                {:else}<div class="placeholder compact"><span class="placeholder-icon">◎</span><p>Esperando predicciones de la IA.</p></div>{/if}
+              <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2><p>VideoMAE + estado de incidente VadCLIP</p></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
+                {#if liveIncident && latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence"><span>Confianza VideoMAE <strong>{confidence(latest.confianza)}</strong></span><span>Anomalía VadCLIP <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></span></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
+                {:else}<div class="placeholder compact"><span class="placeholder-icon">◎</span><strong>{liveClosing ? 'Finalizando incidente…' : 'Sin incidente activo'}</strong><p>Anomalía VadCLIP: <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></p></div>{/if}
               </section>
             </div>
           </div>
@@ -739,13 +803,13 @@
 {#if modal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeRegistration(); }}>
     <div class="dialog" bind:this={dialogElement} role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-description" onkeydown={handleDialogKeydown}>
-      <div class="dialog-top"><div><div class="eyebrow">CONFIGURACIÓN DE FUENTE</div><h2 id="modal-title">Registrar cámara</h2><p id="modal-description">Vincula una transmisión existente de MediaMTX.</p></div><button class="close" type="button" aria-label="Cerrar" onclick={closeRegistration}>×</button></div>
+      <div class="dialog-top"><div><div class="eyebrow">CONFIGURACIÓN DE FUENTE</div><h2 id="modal-title">{editingCamera ? 'Editar cámara' : 'Registrar cámara'}</h2><p id="modal-description">{editingCamera ? 'Actualiza el nombre o la transmisión vinculada.' : 'Vincula una transmisión existente de MediaMTX.'}</p></div><button class="close" type="button" aria-label="Cerrar" onclick={closeRegistration}>×</button></div>
       <form onsubmit={registerCamera}>
         <label for="name">Nombre de la cámara <span>*</span></label><input id="name" data-dialog-initial-focus required maxlength="100" bind:value={name} placeholder="Ej. Cámara de entrada" />
         <label for="url">Dirección WebRTC segura <span>*</span></label><input id="url" type="url" required pattern="https://.*" title="La dirección debe comenzar con https://" bind:value={url} placeholder="https://servidor/camera01/" />
         <p class="form-help">Por seguridad, solo se permiten direcciones que comiencen con <strong>https://</strong>.</p>
-        <div class="info-note"><strong>Transmisión existente</strong><p>La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.</p></div>
-        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? 'Registrando...' : 'Registrar y activar IA'}</button></div>
+        <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si cambias la ruta, reinicia el análisis desde el inventario para aplicar la nueva fuente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
+        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration} disabled={busy}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? (editingCamera ? 'Aplicando cambios...' : 'Registrando...') : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
       </form>
     </div>
   </div>
@@ -785,7 +849,8 @@
   .placeholder,.empty{text-align:center;padding:43px 22px;color:#788ca3}.placeholder p,.empty p{font-size:12px;line-height:1.65;max-width:340px;margin:9px auto 18px}.placeholder-icon{font-size:32px;color:#9caec2;display:block;margin-bottom:10px}.placeholder.compact{padding:22px 5px}.tiny{font-size:11px;color:#8799ab}
   .table-surface{padding:0}.table-surface .section-title{padding:24px 25px 0}.table-scroll{width:100%;overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}thead{background:#f6f8fb;color:#71849c;font-size:11px}th{padding:15px 19px;font-weight:750;white-space:nowrap}td{padding:19px;border-top:1px solid #edf1f6;color:#5c7289;vertical-align:middle}td strong{display:block;color:#25405d;font-weight:700}td small{display:block;color:#879bb0;margin-top:5px}.source-type{font-size:11px}.table-actions{display:flex;flex-wrap:wrap;gap:5px}.text-btn{border:1px solid #dce6ef;background:white;border-radius:5px;color:#215681;font-size:11px;font-weight:650;padding:7px 9px}.text-btn:hover{background:#eef6ff}.text-btn.destructive{color:#b64d55;border-color:#f2d7da}.text-btn:disabled{opacity:.5}.table-empty{text-align:center;color:#95a2b3;padding:45px 15px}.empty{padding:65px 20px}.empty h3{margin:0;color:#2c4966;font-size:16px}
   .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}
-  .monitor-grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(270px,.82fr);align-items:start;gap:21px}.monitor-aside{display:flex;flex-direction:column;gap:20px}.stream-surface{padding:20px}.stream{background:#061326;aspect-ratio:16/9;border-radius:7px;overflow:hidden}.stream iframe{width:100%;height:100%;border:0;display:block}.stream-paused{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6cce0}.stream-paused span{font-size:50px;color:#4e7ea5}.stream-paused p{font-size:12px;text-align:center;padding:0 20px}.stream-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#7c91a5;font-size:11px}.stream-footer>span{display:flex;align-items:center;gap:7px}.stream-footer .led{margin:0}.external{font-size:11px;color:#21609a;text-decoration:none;white-space:nowrap}.metric-list{display:flex;flex-direction:column}.metric-list>div{border-bottom:1px solid #eef1f5;padding:12px 0;display:flex;justify-content:space-between;gap:10px}.metric-list span{font-size:11px;color:#8596a9}.metric-list strong{font-size:12px;color:#32516c;text-align:right}.prediction-label{font-size:24px;font-weight:800;text-transform:capitalize;margin-top:24px;color:#1c557e}.prediction-confidence{display:flex;justify-content:space-between;gap:10px;padding:16px 0;color:#71879d;font-size:12px}.prediction-confidence strong{color:#1f8b68}
+  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}.icon-actions{gap:7px}.camera-table .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:7px;font-size:16px;line-height:1}.camera-table .icon-btn.destructive{font-size:20px;font-weight:500}
+  .monitor-grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(270px,.82fr);align-items:start;gap:21px}.monitor-aside{display:flex;flex-direction:column;gap:20px}.stream-surface{padding:20px}.stream{background:#061326;aspect-ratio:16/9;border-radius:7px;overflow:hidden}.stream iframe{width:100%;height:100%;border:0;display:block}.stream-paused{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6cce0}.stream-paused span{font-size:50px;color:#4e7ea5}.stream-paused p{font-size:12px;text-align:center;padding:0 20px}.stream-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#7c91a5;font-size:11px}.stream-footer>span{display:flex;align-items:center;gap:7px}.stream-footer .led{margin:0}.external{font-size:11px;color:#21609a;text-decoration:none;white-space:nowrap}.metric-list{display:flex;flex-direction:column}.metric-list>div{border-bottom:1px solid #eef1f5;padding:12px 0;display:flex;justify-content:space-between;gap:10px}.metric-list span{font-size:11px;color:#8596a9}.metric-list strong{font-size:12px;color:#32516c;text-align:right}.metric-list strong i{display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:currentColor}.metric-list strong.positive{color:#08705f}.metric-list strong.offline{color:#a65255}.metric-list strong.waiting{color:#a26a17}.prediction-label{font-size:24px;font-weight:800;text-transform:capitalize;margin-top:24px;color:#1c557e}.prediction-confidence{display:flex;justify-content:space-between;gap:10px;padding:16px 0;color:#71879d;font-size:12px}.prediction-confidence>span{display:flex;flex-direction:column;gap:5px}.prediction-confidence strong{color:#1f8b68}
   .camera-wall{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px}.camera-tile{padding:17px 17px 18px;border-radius:13px}.camera-tile-head,.camera-tile-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.camera-tile-head{padding:3px 6px 17px}.camera-tile-head h2{margin:0;color:var(--sx-ink);font-size:17px}.camera-tile-head .pill{background:#edf3f8;color:#56708b}.camera-tile-head .pill.positive{background:#e5f6ef;color:#168267}
   .tile-stream{position:relative;aspect-ratio:16/9;background:#0d2a43;border-radius:9px;overflow:hidden}.tile-stream iframe{width:100%;height:100%;border:0;display:block}.source-mark{position:absolute;left:18px;top:15px;color:#71b0d4;font-size:9px;letter-spacing:1.5px;pointer-events:none;text-shadow:0 1px 2px #071a2c}
   .camera-tile-foot{padding:15px 4px 1px}.tile-detection{padding-left:10px;border-left:3px solid #e9ad43;color:#58738f;font-size:12px}.camera-tile-foot .btn{padding:9px 14px;font-size:12px}.stream-actions{display:flex;align-items:center;gap:12px}

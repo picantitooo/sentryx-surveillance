@@ -3,7 +3,7 @@ import { cameraNumberFromId } from '#domain/camera/camera.js';
 import { callInference } from '../inference/fastapi-client.js';
 
 /**
- * @typedef {{ id: string, number: number, name: string, url: string, streamPath: string, registeredAt: string, enabled: boolean }} Camera
+ * @typedef {{ id: string, number: number, name: string, url: string, streamPath: string, registeredAt: string, enabled: boolean, active: boolean }} Camera
  */
 
 /** @param {any} payload */
@@ -47,7 +47,8 @@ export function mapCamera(row) {
     url: playbackUrl,
     streamPath,
     registeredAt: String(row?.registered_at ?? row?.registeredAt ?? row?.created_at ?? row?.fecha_hora ?? ''),
-    enabled: row?.enabled !== false
+    enabled: row?.enabled !== false,
+    active: row?.active === true
   };
 }
 
@@ -71,6 +72,14 @@ export async function getRegisteredCamera(id) {
 export async function registerCamera(camera) {
   const payload = await callInference('/cameras', {
     method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
+  });
+  return mapCamera(payload?.camera ?? payload);
+}
+
+/** @param {{ id: string, name: string, streamPath: string }} camera */
+export async function updateRegisteredCamera(camera) {
+  const payload = await callInference(`/cameras/${encodeURIComponent(camera.id)}`, {
+    method: 'PUT', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
   });
   return mapCamera(payload?.camera ?? payload);
 }
