@@ -5,17 +5,17 @@ import { createAlertService } from '#application/alerts/alert-service.js';
 import { createDetectionService } from '#application/detections/detection-service.js';
 import { callInference } from '#infrastructure/inference/fastapi-client.js';
 import {
-  getCamera,
-  getCameras,
-  putCamera,
-  removeCamera
-} from '#infrastructure/persistence/json-camera-store.js';
+  getRegisteredCamera,
+  getRegisteredCameras,
+  registerCamera,
+  removeRegisteredCamera
+} from '#infrastructure/cameras/fastapi-camera-registry.js';
 
 const cameraRegistry = {
-  list: async () => getCameras(),
-  get: async (/** @type {unknown} */ id) => getCamera(typeof id === 'string' ? id : null),
-  save: putCamera,
-  remove: removeCamera
+  list: async () => getRegisteredCameras(),
+  get: async (/** @type {unknown} */ id) => getRegisteredCamera(typeof id === 'string' ? id : null),
+  register: registerCamera,
+  remove: removeRegisteredCamera
 };
 
 export const cameraService = createCameraService({ inferenceClient: callInference, cameraRegistry });

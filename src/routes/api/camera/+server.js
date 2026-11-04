@@ -2,12 +2,18 @@ import { json } from '@sveltejs/kit';
 import { normalizePlaybackUrl, streamPathFromPlaybackUrl } from '#domain/camera/camera.js';
 import { cameraService } from '#presentation/server/server-services.js';
 
+/** @param {unknown} error @param {string} fallback */
+function apiErrorMessage(error, fallback) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.replace(/^FastAPI\s+\d+:\s*/i, '') || fallback;
+}
+
 export async function GET() {
   try {
     return json({ cameras: await cameraService.list() });
   } catch (error) {
     console.error('Error al obtener las cámaras:', error);
-    return json({ error: 'No se pudieron consultar las cámaras.' }, { status: 500 });
+    return json({ error: apiErrorMessage(error, 'No se pudieron consultar las cámaras.') }, { status: 500 });
   }
 }
 
@@ -28,7 +34,7 @@ export async function POST({ request }) {
     return json(await cameraService.register({ name, normalizedUrl, streamPath }), { status: 201 });
   } catch (error) {
     console.error('[SentriX] Error al registrar cámara:', error);
-    return json({ error: 'No se pudo registrar la cámara.' }, { status: 500 });
+    return json({ error: apiErrorMessage(error, 'No se pudo registrar la cámara.') }, { status: 500 });
   }
 }
 
@@ -40,6 +46,6 @@ export async function DELETE({ url }) {
     return json(await cameraService.remove(id));
   } catch (error) {
     console.error('[SentriX] Error al eliminar cámara:', error);
-    return json({ error: 'No se pudo eliminar la cámara.' }, { status: 500 });
+    return json({ error: apiErrorMessage(error, 'No se pudo eliminar la cámara.') }, { status: 500 });
   }
 }

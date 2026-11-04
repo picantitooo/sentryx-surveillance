@@ -6,7 +6,7 @@ function registry(cameras = []) {
   return {
     list: async () => cameras,
     get: async (id) => cameras.find((camera) => camera.id === id) ?? null,
-    save: async (camera) => { cameras.push(camera); return camera; },
+    register: async (camera) => { cameras.push(camera); return { ...camera, number: cameras.length, registeredAt: '2026-10-31T00:00:00.000Z', enabled: true }; },
     remove: async (id) => {
       const index = cameras.findIndex((camera) => camera.id === id);
       if (index >= 0) cameras.splice(index, 1);
@@ -14,7 +14,7 @@ function registry(cameras = []) {
   };
 }
 
-test('registra en el repositorio e inicia su fuente con el ID devuelto', async () => {
+test('persiste en el repositorio y usa el ID de la cámara registrada', async () => {
   const calls = [];
   const cameras = [];
   const inferenceClient = async (path, options = {}) => {
@@ -48,6 +48,28 @@ test('mantiene la cámara registrada por el backend aunque inferencia no esté d
   assert.equal(cameras.length, 1);
   assert.equal(result.camera.id, 'camara1');
   assert.equal(result.inference.available, false);
+});
+
+test('recalcula source_id una vez cuando otra sesión registra la cámara primero', async () => {
+  const attempts = [];
+  let lists = 0;
+  const service = createCameraService({
+    inferenceClient: async (_path, options) => ({ source_id: options.body.source_id, status: 'pending' }),
+    cameraRegistry: {
+      list: async () => ++lists === 1 ? [] : [{ id: 'camara1' }],
+      get: async () => null,
+      register: async (camera) => {
+        attempts.push(camera.id);
+        if (attempts.length === 1) throw new Error('FastAPI 409: source_id ya existe');
+        return { ...camera, number: 2, enabled: true };
+      },
+      remove: async () => {}
+    }
+  });
+
+  const result = await service.register({ name: 'Patio', normalizedUrl: 'https://media.example/camera03', streamPath: 'camera03' });
+  assert.deepEqual(attempts, ['camara1', 'camara2']);
+  assert.equal(result.camera.id, 'camara2');
 });
 
 test('start informa cuando la cámara no existe', async () => {

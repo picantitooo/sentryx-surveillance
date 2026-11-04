@@ -6,7 +6,7 @@ export class CameraNotFoundError extends Error {}
  *   cameraRegistry: {
  *     list: () => Promise<any[]>,
  *     get: (id: string | null | undefined) => Promise<any>,
- *     save: (camera: any) => Promise<any>,
+ *     register: (camera: any) => Promise<any>,
  *     remove: (id: string) => Promise<void>
  *   }
  * }} dependencies
@@ -19,11 +19,18 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
 
     /** @param {{ name: string, normalizedUrl: string, streamPath: string }} input */
     async register({ name, normalizedUrl, streamPath }) {
-      // El panel puede registrar fuentes aunque FastAPI/Neon no esté disponible.
       const cameras = await cameraRegistry.list();
-      const number = nextAvailableCameraNumber(cameras);
-      const camera = { id: `camara${number}`, number, name, url: `${normalizedUrl}/`, streamPath, registeredAt: new Date().toISOString(), enabled: true };
-      await cameraRegistry.save(camera);
+      let camera;
+      try {
+        const id = `camara${nextAvailableCameraNumber(cameras)}`;
+        camera = await cameraRegistry.register({ id, name, streamPath, normalizedUrl });
+      } catch (error) {
+        // Otra sesión pudo registrar el mismo source_id entre el listado y el POST.
+        if (!/\b409\b/.test(error instanceof Error ? error.message : String(error))) throw error;
+        const refreshed = await cameraRegistry.list();
+        const id = `camara${nextAvailableCameraNumber(refreshed)}`;
+        camera = await cameraRegistry.register({ id, name, streamPath, normalizedUrl });
+      }
 
       try {
         const source = await inferenceClient('/sources/start', {
@@ -52,14 +59,15 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
       const camera = await cameraRegistry.get(id);
       if (!camera) return { removed: true };
 
-      await cameraRegistry.remove(id);
-
       let warning = null;
       try {
         await inferenceClient(`/sources/${encodeURIComponent(id)}`, { method: 'DELETE' });
       } catch {
-        warning = 'La cámara se eliminó localmente. El servidor de inferencia no respondió.';
+        warning = 'No se pudo detener la inferencia antes de eliminar la cámara.';
       }
+
+      if (warning) return { removed: false, inferenceStopped: false, warning };
+      await cameraRegistry.remove(id);
 
       return { removed: true, inferenceStopped: warning === null, warning };
     }
