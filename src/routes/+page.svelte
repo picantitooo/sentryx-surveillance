@@ -16,7 +16,7 @@
   interface Alert extends Detection { timestamp_inicio?: string; timestamp_fin?: string; fecha_hora_fin?: string; duracion_segundos?: number; interruption_reason?: string; threshold?: number; }
   interface AlertListResponse { items?: Alert[]; total?: number; limit?: number; offset?: number; }
   interface ClipResponse { status?: 'recording' | 'ready' | 'partial' | 'missing'; url?: string | null; duration_seconds?: number | null; }
-  interface LatestResult { processing_ms?: number; }
+  interface LatestResult extends Detection { processing_ms?: number; anomaly_score?: number; alert?: { incident?: boolean; closing?: boolean; }; }
   interface InferenceSource { status?: string; worker_id?: string | null; status_age_seconds?: number | null; frames_received?: number; windows_processed?: number; last_frame_age_seconds?: number | null; latest_result?: LatestResult; }
   interface InferenceResponse { available: boolean; source: InferenceSource | null; latestDetection?: Detection | null; detections?: Detection[]; alerts?: Alert[]; error?: string; }
   interface DashboardResponse { available: boolean; sources?: Record<string, InferenceSource>; alerts?: Alert[]; error?: string; }
@@ -140,6 +140,9 @@
   let minimumProcessingMs = $derived(processingTimes.length ? Math.min(...processingTimes) : null);
   let maximumProcessingMs = $derived(processingTimes.length ? Math.max(...processingTimes) : null);
   let latestProcessingMs = $derived(source?.latest_result?.processing_ms ?? latest?.processing_ms ?? null);
+  let liveAnomalyScore = $derived(source?.latest_result?.anomaly_score ?? null);
+  let liveIncident = $derived(source?.latest_result?.alert?.incident === true);
+  let liveClosing = $derived(source?.latest_result?.alert?.closing === true);
   let activeCameraCount = $derived(cameras.filter((item) => {
     const result = inferenceByCamera[item.id];
     return result?.available === true && isSourceReceiving(result.source);
@@ -171,9 +174,10 @@
   let cameraCoverage = $derived(cameras.length ? Math.round((activeTransmissionCount / cameras.length) * 100) : 0);
   let attentionCameras = $derived(cameras.filter((item) => !cameraIsOnline(item.id)));
   let dashboardSamples = $derived(dashboardDetections.length ? dashboardDetections : overviewDetections);
+  let todayDashboardSamples = $derived(dashboardSamples.filter((detection) => peruDateKey(detection.fecha_hora ?? detection.created_at) === todayKey));
   let detectionDistribution = $derived.by(() => {
     const counts = new Map<string, number>();
-    for (const detection of dashboardSamples) {
+    for (const detection of todayDashboardSamples) {
       const name = labelClass(detection.clase ?? detection.class_name);
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
@@ -192,7 +196,7 @@
     }).join(', ');
   });
   let hourlyActivity = $derived.by(() => Array.from({ length: 24 }, (_, hour) => {
-    const count = dashboardSamples.filter((detection) => new Date(detection.fecha_hora ?? detection.created_at ?? 0).getHours() === hour).length;
+    const count = todayDashboardSamples.filter((detection) => peruHour(detection.fecha_hora ?? detection.created_at) === hour).length;
     return { hour, count };
   }));
   let hourlyMaximum = $derived(Math.max(1, ...hourlyActivity.map((item) => item.count)));
@@ -203,6 +207,15 @@
   let paginatedMonitorCameras = $derived(cameras.slice((currentMonitorPage - 1) * MONITOR_PAGE_SIZE, currentMonitorPage * MONITOR_PAGE_SIZE));
 
   function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
+  function peruDateKey(value: string | undefined) {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(date) : '';
+  }
+  function peruHour(value: string | undefined) {
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return -1;
+    return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Lima', hour: '2-digit', hourCycle: 'h23' }).format(date));
+  }
   async function getJSON<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, options);
     const data = await response.json().catch(() => ({})) as T & ErrorPayload;
@@ -593,14 +606,14 @@
           </section>
           <div class="overview-analytics">
             <section class="surface distribution-card">
-              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Muestra reciente</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Hoy · últimas 100 disponibles</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
               {#if distributionTotal}
                 <div class="distribution-content"><div class="donut" style={`background:conic-gradient(${distributionGradient})`}><div><strong>{distributionTotal}</strong><span>registros</span></div></div><div class="distribution-legend">{#each detectionDistribution as [type, count], index (type)}<div><i class={`legend-${index}`}></i><span>{type}</span><strong>{count}</strong></div>{/each}</div></div>
               {:else}<div class="chart-empty">Aún no hay detecciones recientes para clasificar.</div>{/if}
             </section>
             <section class="surface hourly-card">
-              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Muestra reciente</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
-              {#if dashboardSamples.length}<div class="hour-chart" aria-label="Actividad de detecciones por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} detecciones`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay actividad reciente para graficar.</div>{/if}
+              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Hoy · horario de Lima</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              {#if todayDashboardSamples.length}<div class="hour-chart" aria-label="Actividad de detecciones por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} detecciones`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay detecciones de hoy para graficar.</div>{/if}
             </section>
           </div>
         </div>
@@ -673,11 +686,11 @@
             </section>
             <div class="monitor-aside">
               <section class="surface"><div class="section-title"><div><h2>Inteligencia artificial</h2><p>Estado de FastAPI</p></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
-                <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Ventanas procesadas</span><strong>{source?.windows_processed ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
+                <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Estado del incidente</span><strong class:offline={!liveIncident && !liveClosing} class:waiting={liveClosing}><i></i>{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</strong></div><div><span>Puntaje de anomalía VadCLIP</span><strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
                 <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar IA'}</button>
               </section>
-              <section class="surface"><div class="section-title"><div><h2>Predicción reciente</h2><p>Resultado de la última ventana</p></div></div>
-                {#if latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence">Confianza <strong>{confidence(latest.confianza)}</strong></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
+              <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2><p>VideoMAE + estado de incidente VadCLIP</p></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
+                {#if latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence"><span>Confianza VideoMAE <strong>{confidence(latest.confianza)}</strong></span><span>Anomalía VadCLIP <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></span></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
                 {:else}<div class="placeholder compact"><span class="placeholder-icon">◎</span><p>Esperando predicciones de la IA.</p></div>{/if}
               </section>
             </div>

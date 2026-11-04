@@ -6,7 +6,7 @@
 
 <section class="alerts-view surface" aria-labelledby="events-title">
   <header class="events-header">
-    <div class="events-heading"><span class="eyebrow">CENTRO DE INCIDENTES</span><h2 id="events-title">Eventos confirmados</h2><p>Consulta la evidencia, duración y estado de cada evento detectado.</p></div>
+    <div class="events-heading"><span class="eyebrow">CENTRO DE INCIDENTES</span><h2 id="events-title">Eventos confirmados</h2><p>La clase se consolida al cerrar el evento; el puntaje corresponde a VadCLIP.</p></div>
     <div class="events-actions"><span class="event-count" aria-label={`${total} eventos`}>{total}<small>eventos</small></span><button class="refresh-button" type="button" onclick={onRefresh} disabled={loading} aria-label="Actualizar eventos"><span aria-hidden="true">↻</span>{loading ? 'Actualizando' : 'Actualizar'}</button></div>
   </header>
   {#if error}<div class="banner error" role="alert"><strong>No se pudieron actualizar los eventos</strong><span>{error}</span></div>{/if}
@@ -18,7 +18,7 @@
           <div class="event-content">
             <div class="event-topline"><div><p class="camera-label"><span aria-hidden="true">◉</span> {alert.camera ?? 'Cámara no identificada'}</p><h3>{labelClass(alert.clase)}</h3></div><span class:status-active={isActive(alert)} class:status-interrupted={isInterrupted(alert)} class="status-pill"><i></i>{statusLabel(alert.status)}</span></div>
             <div class="event-timeline" aria-label="Tiempos del evento"><div><span>INICIO</span><strong>{formatDate(alert.timestamp_inicio ?? alert.fecha_hora)}</strong></div><div class="timeline-line" aria-hidden="true"><i></i></div><div><span>FIN</span><strong>{formatDate(alert.timestamp_fin ?? alert.fecha_hora_fin)}</strong></div><div class="duration"><span>DURACIÓN</span><strong>{duration(alert.duracion_segundos)}</strong></div></div>
-            <div class="event-metrics"><span>Confianza <strong>{confidence(alert.confianza)}</strong></span><span>Umbral <strong>{confidence(alert.threshold)}</strong></span>{#if isInterrupted(alert) && alert.interruption_reason}<span class="interruption"><strong>Interrupción:</strong> {alert.interruption_reason}</span>{/if}</div>
+            <div class="event-metrics"><span>Anomalía VadCLIP <strong>{confidence(alert.confianza)}</strong></span><span>Umbral de apertura <strong>{confidence(alert.threshold)}</strong></span>{#if isInterrupted(alert) && alert.interruption_reason}<span class="interruption"><strong>Interrupción:</strong> {alert.interruption_reason}</span>{/if}</div>
           </div>
           <button class="detail-button" type="button" onclick={() => onDetail(alert)}>Ver detalle <span aria-hidden="true">→</span></button>
         </article>
