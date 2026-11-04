@@ -8,6 +8,7 @@ import {
   getRegisteredCamera,
   getRegisteredCameras,
   registerCamera,
+  updateRegisteredCamera,
   removeRegisteredCamera
 } from '#infrastructure/cameras/fastapi-camera-registry.js';
 
@@ -15,6 +16,7 @@ const cameraRegistry = {
   list: async () => getRegisteredCameras(),
   get: async (/** @type {unknown} */ id) => getRegisteredCamera(typeof id === 'string' ? id : null),
   register: registerCamera,
+  update: updateRegisteredCamera,
   remove: removeRegisteredCamera
 };
 

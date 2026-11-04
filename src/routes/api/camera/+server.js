@@ -38,6 +38,25 @@ export async function POST({ request }) {
   }
 }
 
+export async function PUT({ request, url }) {
+  const id = url.searchParams.get('id')?.trim();
+  const body = await request.json().catch(() => null);
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const normalizedUrl = normalizePlaybackUrl(body?.url);
+  const streamPath = streamPathFromPlaybackUrl(normalizedUrl);
+  if (!id) return json({ error: 'Falta el identificador de la cámara.' }, { status: 400 });
+  if (!name || name.length > 100) return json({ error: 'El nombre es obligatorio y debe tener como máximo 100 caracteres.' }, { status: 400 });
+  if (!normalizedUrl || !streamPath || !/^[a-z0-9_-]{1,64}$/.test(streamPath)) {
+    return json({ error: 'Ingresa una URL HTTPS válida cuyo último segmento sea el identificador de la cámara.' }, { status: 400 });
+  }
+  try {
+    return json({ camera: await cameraService.update(id, { name, normalizedUrl, streamPath }) });
+  } catch (error) {
+    console.error('[SentriX] Error al actualizar cámara:', error);
+    return json({ error: apiErrorMessage(error, 'No se pudo actualizar la cámara.') }, { status: 500 });
+  }
+}
+
 export async function DELETE({ url }) {
   const id = url.searchParams.get('id')?.trim();
   if (!id) return json({ error: 'Falta el identificador de la cámara.' }, { status: 400 });

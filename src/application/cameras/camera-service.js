@@ -7,6 +7,7 @@ export class CameraNotFoundError extends Error {}
  *     list: () => Promise<any[]>,
  *     get: (id: string | null | undefined) => Promise<any>,
  *     register: (camera: any) => Promise<any>,
+ *     update: (camera: any) => Promise<any>,
  *     remove: (id: string) => Promise<void>
  *   }
  * }} dependencies
@@ -52,6 +53,13 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
       return inferenceClient('/sources/start', {
         method: 'POST', body: { source_id: camera.id, stream_path: camera.streamPath ?? camera.id }
       });
+    },
+
+    /** @param {string} id @param {{ name: string, normalizedUrl: string, streamPath: string }} input */
+    async update(id, { name, normalizedUrl, streamPath }) {
+      const current = await cameraRegistry.get(id);
+      if (!current) throw new CameraNotFoundError('La cámara ya no existe. Recarga el inventario.');
+      return cameraRegistry.update({ id: current.id, name, streamPath, normalizedUrl });
     },
 
     /** @param {string} id */

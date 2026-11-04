@@ -75,6 +75,14 @@ export async function registerCamera(camera) {
   return mapCamera(payload?.camera ?? payload);
 }
 
+/** @param {{ id: string, name: string, streamPath: string }} camera */
+export async function updateRegisteredCamera(camera) {
+  const payload = await callInference(`/cameras/${encodeURIComponent(camera.id)}`, {
+    method: 'PUT', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
+  });
+  return mapCamera(payload?.camera ?? payload);
+}
+
 /** @param {string} id */
 export async function removeRegisteredCamera(id) {
   return callInference(`/cameras/${encodeURIComponent(id)}`, { method: 'DELETE' });

@@ -7,6 +7,11 @@ function registry(cameras = []) {
     list: async () => cameras,
     get: async (id) => cameras.find((camera) => camera.id === id) ?? null,
     register: async (camera) => { cameras.push(camera); return { ...camera, number: cameras.length, registeredAt: '2026-10-31T00:00:00.000Z', enabled: true }; },
+    update: async (camera) => {
+      const index = cameras.findIndex((item) => item.id === camera.id);
+      if (index >= 0) cameras[index] = { ...cameras[index], ...camera };
+      return { ...cameras[index], number: 1, enabled: true };
+    },
     remove: async (id) => {
       const index = cameras.findIndex((camera) => camera.id === id);
       if (index >= 0) cameras.splice(index, 1);
@@ -77,6 +82,16 @@ test('start informa cuando la cámara no existe', async () => {
     inferenceClient: async () => ({}), cameraRegistry: registry([])
   });
   await assert.rejects(() => service.start('camara99'), CameraNotFoundError);
+});
+
+test('actualiza nombre y fuente a través del registro remoto', async () => {
+  const cameras = [{ id: 'camara1', name: 'Entrada', streamPath: 'camera01' }];
+  const service = createCameraService({ inferenceClient: async () => ({}), cameraRegistry: registry(cameras) });
+  const updated = await service.update('camara1', {
+    name: 'Puerta principal', normalizedUrl: 'https://media.example/camera02', streamPath: 'camera02'
+  });
+  assert.equal(updated.name, 'Puerta principal');
+  assert.equal(updated.streamPath, 'camera02');
 });
 
 test('remove no llama al backend cuando la cámara no existe', async () => {

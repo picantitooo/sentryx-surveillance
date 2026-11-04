@@ -44,6 +44,7 @@
   ];
   let view = $state<ViewId>('overview');
   let modal = $state(false);
+  let editingCamera = $state<Camera | null>(null);
   let cameras = $state<Camera[]>([]);
   let selectedId = $state('');
   let inference = $state<InferenceResponse | null>(null);
@@ -386,17 +387,28 @@
     try {
       const parsedUrl = new URL(url.trim());
       if (parsedUrl.protocol !== 'https:') throw new Error('La dirección de la cámara debe utilizar HTTPS. Ejemplo: https://servidor/camera01/');
-      const data = await getJSON<RegisterCameraResponse>('/api/camera', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
-      });
-      cameras = [...cameras, data.camera];
-      clearOperationalCache();
-      selectedId = data.camera.id;
-      notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
-      if (data.inference?.error) error = data.inference.error;
+      if (editingCamera) {
+        const data = await getJSON<{ camera: Camera }>(`/api/camera?id=${encodeURIComponent(editingCamera.id)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
+        });
+        cameras = cameras.map((item) => item.id === editingCamera?.id ? data.camera : item);
+        clearOperationalCache();
+        selectedId = data.camera.id;
+        notice = 'Cámara actualizada. Si cambiaste la fuente, reintenta el análisis.';
+      } else {
+        const data = await getJSON<RegisterCameraResponse>('/api/camera', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
+        });
+        cameras = [...cameras, data.camera];
+        clearOperationalCache();
+        selectedId = data.camera.id;
+        notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
+        if (data.inference?.error) error = data.inference.error;
+      }
       modal = false; view = 'cameras'; showPlayer = true;
-      name = ''; url = '';
-      await refreshInference(data.camera.id);
+      const updatedId = editingCamera?.id ?? selectedId;
+      editingCamera = null; name = ''; url = '';
+      await refreshInference(updatedId);
     } catch (e) { error = errorMessage(e); }
     finally { busy = false; }
   }
@@ -481,12 +493,18 @@
   function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
     openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    clearFeedback(); name = ''; url = ''; modal = true;
+    clearFeedback(); editingCamera = null; name = ''; url = ''; modal = true;
+    await tick();
+    dialogElement?.querySelector<HTMLElement>('[data-dialog-initial-focus]')?.focus();
+  }
+  async function showEditCamera(item: Camera, event?: MouseEvent) {
+    openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    clearFeedback(); editingCamera = item; name = item.name; url = item.url; modal = true;
     await tick();
     dialogElement?.querySelector<HTMLElement>('[data-dialog-initial-focus]')?.focus();
   }
   function closeRegistration() {
-    modal = false;
+    modal = false; editingCamera = null;
     tick().then(() => openerElement?.focus());
   }
   function saveAccessibilityPreferences() {
@@ -645,7 +663,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Registro</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions"><button class="text-btn monitor-action" onclick={() => selectCamera(item)}>Ver monitor</button><button class="text-btn" onclick={() => activateInference(item)} disabled={busy}>Reintentar IA</button><button class="text-btn destructive" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`}>Eliminar</button></div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -752,13 +770,13 @@
 {#if modal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeRegistration(); }}>
     <div class="dialog" bind:this={dialogElement} role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-description" onkeydown={handleDialogKeydown}>
-      <div class="dialog-top"><div><div class="eyebrow">CONFIGURACIÓN DE FUENTE</div><h2 id="modal-title">Registrar cámara</h2><p id="modal-description">Vincula una transmisión existente de MediaMTX.</p></div><button class="close" type="button" aria-label="Cerrar" onclick={closeRegistration}>×</button></div>
+      <div class="dialog-top"><div><div class="eyebrow">CONFIGURACIÓN DE FUENTE</div><h2 id="modal-title">{editingCamera ? 'Editar cámara' : 'Registrar cámara'}</h2><p id="modal-description">{editingCamera ? 'Actualiza el nombre o la transmisión vinculada.' : 'Vincula una transmisión existente de MediaMTX.'}</p></div><button class="close" type="button" aria-label="Cerrar" onclick={closeRegistration}>×</button></div>
       <form onsubmit={registerCamera}>
         <label for="name">Nombre de la cámara <span>*</span></label><input id="name" data-dialog-initial-focus required maxlength="100" bind:value={name} placeholder="Ej. Cámara de entrada" />
         <label for="url">Dirección WebRTC segura <span>*</span></label><input id="url" type="url" required pattern="https://.*" title="La dirección debe comenzar con https://" bind:value={url} placeholder="https://servidor/camera01/" />
         <p class="form-help">Por seguridad, solo se permiten direcciones que comiencen con <strong>https://</strong>.</p>
-        <div class="info-note"><strong>Transmisión existente</strong><p>La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.</p></div>
-        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? 'Registrando...' : 'Registrar y activar IA'}</button></div>
+        <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si cambias la ruta, reinicia el análisis desde el inventario para aplicar la nueva fuente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
+        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? 'Guardando...' : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
       </form>
     </div>
   </div>
@@ -798,6 +816,7 @@
   .placeholder,.empty{text-align:center;padding:43px 22px;color:#788ca3}.placeholder p,.empty p{font-size:12px;line-height:1.65;max-width:340px;margin:9px auto 18px}.placeholder-icon{font-size:32px;color:#9caec2;display:block;margin-bottom:10px}.placeholder.compact{padding:22px 5px}.tiny{font-size:11px;color:#8799ab}
   .table-surface{padding:0}.table-surface .section-title{padding:24px 25px 0}.table-scroll{width:100%;overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}thead{background:#f6f8fb;color:#71849c;font-size:11px}th{padding:15px 19px;font-weight:750;white-space:nowrap}td{padding:19px;border-top:1px solid #edf1f6;color:#5c7289;vertical-align:middle}td strong{display:block;color:#25405d;font-weight:700}td small{display:block;color:#879bb0;margin-top:5px}.source-type{font-size:11px}.table-actions{display:flex;flex-wrap:wrap;gap:5px}.text-btn{border:1px solid #dce6ef;background:white;border-radius:5px;color:#215681;font-size:11px;font-weight:650;padding:7px 9px}.text-btn:hover{background:#eef6ff}.text-btn.destructive{color:#b64d55;border-color:#f2d7da}.text-btn:disabled{opacity:.5}.table-empty{text-align:center;color:#95a2b3;padding:45px 15px}.empty{padding:65px 20px}.empty h3{margin:0;color:#2c4966;font-size:16px}
   .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}
+  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}.icon-actions{gap:7px}.camera-table .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:7px;font-size:16px;line-height:1}.camera-table .icon-btn.destructive{font-size:20px;font-weight:500}
   .monitor-grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(270px,.82fr);align-items:start;gap:21px}.monitor-aside{display:flex;flex-direction:column;gap:20px}.stream-surface{padding:20px}.stream{background:#061326;aspect-ratio:16/9;border-radius:7px;overflow:hidden}.stream iframe{width:100%;height:100%;border:0;display:block}.stream-paused{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6cce0}.stream-paused span{font-size:50px;color:#4e7ea5}.stream-paused p{font-size:12px;text-align:center;padding:0 20px}.stream-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#7c91a5;font-size:11px}.stream-footer>span{display:flex;align-items:center;gap:7px}.stream-footer .led{margin:0}.external{font-size:11px;color:#21609a;text-decoration:none;white-space:nowrap}.metric-list{display:flex;flex-direction:column}.metric-list>div{border-bottom:1px solid #eef1f5;padding:12px 0;display:flex;justify-content:space-between;gap:10px}.metric-list span{font-size:11px;color:#8596a9}.metric-list strong{font-size:12px;color:#32516c;text-align:right}.prediction-label{font-size:24px;font-weight:800;text-transform:capitalize;margin-top:24px;color:#1c557e}.prediction-confidence{display:flex;justify-content:space-between;gap:10px;padding:16px 0;color:#71879d;font-size:12px}.prediction-confidence strong{color:#1f8b68}
   .camera-wall{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px}.camera-tile{padding:17px 17px 18px;border-radius:13px}.camera-tile-head,.camera-tile-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.camera-tile-head{padding:3px 6px 17px}.camera-tile-head h2{margin:0;color:var(--sx-ink);font-size:17px}.camera-tile-head .pill{background:#edf3f8;color:#56708b}.camera-tile-head .pill.positive{background:#e5f6ef;color:#168267}
   .tile-stream{position:relative;aspect-ratio:16/9;background:#0d2a43;border-radius:9px;overflow:hidden}.tile-stream iframe{width:100%;height:100%;border:0;display:block}.source-mark{position:absolute;left:18px;top:15px;color:#71b0d4;font-size:9px;letter-spacing:1.5px;pointer-events:none;text-shadow:0 1px 2px #071a2c}
