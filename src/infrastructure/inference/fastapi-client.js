@@ -3,28 +3,41 @@ import { INFERENCE_API_URL, INFERENCE_API_KEY } from '$app/env/private';
 
 /**
  * @param {string} path
- * @param {{ method?: string, body?: unknown }} [options]
+ * @param {{ method?: string, body?: unknown, timeoutMs?: number, retryOnTimeout?: boolean }} [options]
  * @returns {Promise<any>}
  */
-export async function callInference(path, { method = 'GET', body } = {}) {
+export async function callInference(path, { method = 'GET', body, timeoutMs = 10_000, retryOnTimeout = true } = {}) {
   const base = INFERENCE_API_URL?.replace(/\/$/, '');
   const key = INFERENCE_API_KEY;
   if (!base || !key) {
     throw new Error('Configura INFERENCE_API_URL e INFERENCE_API_KEY en .env');
   }
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      'X-API-Key': key,
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(6000)
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof data.detail === 'string' ? data.detail : `HTTP ${response.status}`;
-    throw new Error(`FastAPI: ${message}`);
+  /** @param {number} timeout */
+  const request = async (timeout) => {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'X-API-Key': key,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(timeout)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = Array.isArray(data.detail)
+        ? data.detail.map((/** @type {any} */ item) => `${Array.isArray(item?.loc) ? item.loc.at(-1) : 'dato'}: ${item?.msg ?? 'inválido'}`).join('; ')
+        : typeof data.detail === 'string' ? data.detail : `HTTP ${response.status}`;
+      throw new Error(`FastAPI ${response.status}: ${detail}`);
+    }
+    return data;
+  };
+
+  try { return await request(timeoutMs); }
+  catch (error) {
+    const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
+    if (!retryOnTimeout || !timedOut || timeoutMs >= 70_000) throw error;
+    // Render puede despertar tras inactividad; se intenta una sola vez con margen amplio.
+    return request(70_000);
   }
-  return data;
 }

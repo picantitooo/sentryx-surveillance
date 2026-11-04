@@ -50,6 +50,28 @@ test('mantiene la cámara registrada por el backend aunque inferencia no esté d
   assert.equal(result.inference.available, false);
 });
 
+test('recalcula source_id una vez cuando otra sesión registra la cámara primero', async () => {
+  const attempts = [];
+  let lists = 0;
+  const service = createCameraService({
+    inferenceClient: async (_path, options) => ({ source_id: options.body.source_id, status: 'pending' }),
+    cameraRegistry: {
+      list: async () => ++lists === 1 ? [] : [{ id: 'camara1' }],
+      get: async () => null,
+      register: async (camera) => {
+        attempts.push(camera.id);
+        if (attempts.length === 1) throw new Error('FastAPI 409: source_id ya existe');
+        return { ...camera, number: 2, enabled: true };
+      },
+      remove: async () => {}
+    }
+  });
+
+  const result = await service.register({ name: 'Patio', normalizedUrl: 'https://media.example/camera03', streamPath: 'camera03' });
+  assert.deepEqual(attempts, ['camara1', 'camara2']);
+  assert.equal(result.camera.id, 'camara2');
+});
+
 test('start informa cuando la cámara no existe', async () => {
   const service = createCameraService({
     inferenceClient: async () => ({}), cameraRegistry: registry([])

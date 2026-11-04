@@ -30,13 +30,16 @@ async function readJson(request) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 
-function createMockBackend(cameras) {
+function createMockBackend(cameras, state) {
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
     if (request.headers['x-api-key'] !== apiKey) {
       sendJson(response, 401, { detail: 'API key inválida' }); return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
+      if (!state.apiAvailable) {
+        sendJson(response, 503, { detail: 'FastAPI no disponible' }); return;
+      }
       sendJson(response, 200, { status: 'ok' }); return;
     }
     if (request.method === 'GET' && url.pathname === '/cameras') {
@@ -70,7 +73,8 @@ function createMockBackend(cameras) {
       sendJson(response, 200, { stopped: true }); return;
     }
     if (request.method === 'GET' && /\/sources\/[^/]+\/status$/.test(url.pathname)) {
-      sendJson(response, 200, { status: 'running' }); return;
+      const id = decodeURIComponent(url.pathname.split('/').at(-2));
+      sendJson(response, 200, state.sources[id] ?? { status: 'running' }); return;
     }
     if (request.method === 'GET' && url.pathname === '/detections') {
       sendJson(response, 200, [{
@@ -114,7 +118,8 @@ export async function startTestApplication() {
   const [frontendPort, backendPort] = await Promise.all([getAvailablePort(), getAvailablePort()]);
   const frontendUrl = `http://127.0.0.1:${frontendPort}`;
   const backendUrl = `http://127.0.0.1:${backendPort}`;
-  const backendServer = createMockBackend(cameras);
+  const backendState = { apiAvailable: true, sources: {} };
+  const backendServer = createMockBackend(cameras, backendState);
   await listen(backendServer, backendPort);
 
   let output = '';
@@ -138,6 +143,7 @@ export async function startTestApplication() {
   return {
     baseUrl: frontendUrl,
     cameras,
+    backendState,
     async close() {
       if (frontendProcess.exitCode === null) {
         frontendProcess.kill('SIGTERM');

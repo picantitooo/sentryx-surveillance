@@ -19,11 +19,18 @@ export function createCameraService({ inferenceClient, cameraRegistry }) {
 
     /** @param {{ name: string, normalizedUrl: string, streamPath: string }} input */
     async register({ name, normalizedUrl, streamPath }) {
-      // Se prepara un ID de compatibilidad; TA-10 lo ignorará y generará source_id en backend.
       const cameras = await cameraRegistry.list();
-      const number = nextAvailableCameraNumber(cameras);
-      const id = `camara${number}`;
-      const camera = await cameraRegistry.register({ id, name, streamPath, normalizedUrl });
+      let camera;
+      try {
+        const id = `camara${nextAvailableCameraNumber(cameras)}`;
+        camera = await cameraRegistry.register({ id, name, streamPath, normalizedUrl });
+      } catch (error) {
+        // Otra sesión pudo registrar el mismo source_id entre el listado y el POST.
+        if (!/\b409\b/.test(error instanceof Error ? error.message : String(error))) throw error;
+        const refreshed = await cameraRegistry.list();
+        const id = `camara${nextAvailableCameraNumber(refreshed)}`;
+        camera = await cameraRegistry.register({ id, name, streamPath, normalizedUrl });
+      }
 
       try {
         const source = await inferenceClient('/sources/start', {

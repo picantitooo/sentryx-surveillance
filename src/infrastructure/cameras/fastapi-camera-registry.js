@@ -18,9 +18,15 @@ function cameraRows(payload) {
 export function mapCamera(row) {
   const id = String(row?.source_id ?? row?.id ?? '').trim();
   const streamPath = String(row?.stream_path ?? row?.streamPath ?? id).trim();
+  // Lectura dinámica: la variable se define en Vercel y no debe llegar al navegador.
+  const playbackBaseUrl = String(process.env.CAMERA_PLAYBACK_BASE_URL ?? '').trim();
   const configuredUrl = String(CAMERA_PLAYBACK_URL ?? '').trim();
   let playbackUrl = String(row?.url ?? row?.playback_url ?? '').trim();
 
+  if (!playbackUrl && playbackBaseUrl) {
+    playbackUrl = `${playbackBaseUrl.replace(/\/+$/, '')}/${encodeURIComponent(streamPath)}/`;
+  }
+  // Compatibilidad temporal con la variable anterior que contenía una URL completa.
   if (!playbackUrl && configuredUrl) {
     try {
       const parsed = new URL(configuredUrl);
@@ -59,24 +65,14 @@ export async function getRegisteredCamera(id) {
 }
 
 /**
- * Registra la cámara en FastAPI/Neon. Durante TA-10 el backend genera el
- * source_id; la segunda solicitud mantiene compatibilidad con el contrato anterior.
+ * Registra la cámara en FastAPI/Neon con el contrato vigente: source_id obligatorio.
  * @param {{ id: string, name: string, streamPath: string }} camera
  */
 export async function registerCamera(camera) {
-  try {
-    const payload = await callInference('/cameras', {
-      method: 'POST', body: { name: camera.name, stream_path: camera.streamPath }
-    });
-    return mapCamera(payload?.camera ?? payload);
-  } catch (error) {
-    // El backend previo a TA-10 responde 422 porque source_id sigue siendo obligatorio.
-    if (!/\b422\b/.test(error instanceof Error ? error.message : String(error))) throw error;
-    const payload = await callInference('/cameras', {
-      method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
-    });
-    return mapCamera(payload?.camera ?? payload);
-  }
+  const payload = await callInference('/cameras', {
+    method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
+  });
+  return mapCamera(payload?.camera ?? payload);
 }
 
 /** @param {string} id */
