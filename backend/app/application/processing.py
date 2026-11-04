@@ -70,6 +70,15 @@ class WindowProcessor:
                             await runtime.log_event("alert_opened" if result["alert"]["started"] else "alert_closed",
                                 "Evento confirmado" if result["alert"]["started"] else "Regreso a Normal confirmado",
                                 session=session, window_id=window_id, detection_id=detection["id"])
+                        # El clip nunca debe frenar la inferencia ni perder la alerta.
+                        try:
+                            if result["alert"]["started"] and session.active_alert is not None:
+                                await runtime.alert_opened(session, session.active_alert)
+                            elif result["alert"]["ended"] and event is not None:
+                                await runtime.alert_finished(session, event["id"], event.get("timestamp_fin"),
+                                                             complete=True, reason="closed")
+                        except Exception:
+                            logger.exception("No se pudo actualizar el clip de %s", session.source_id)
                     session.policy_epoch = epoch
                     session.last_policy_window = number
                     if detection is not None:

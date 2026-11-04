@@ -97,6 +97,7 @@ Todas las rutas exigen `X-API-Key`, salvo `/health`, `/docs`, `/redoc` y `/opena
 | `POST /sources/start`, `GET /sources`, `GET /sources/{id}/status`, `DELETE /sources/{id}` | Iniciar, consultar y detener el análisis de una cámara. |
 | `GET /detections`, `GET /detections/{id}` | Historial de inferencias (filtro `camera`, `limit` 1–500, `offset`). |
 | `GET /alerts`, `GET /alerts/{id}` | Eventos confirmados (filtros `camera`, `status`; paginación). |
+| `GET /alerts/{id}/clip` | Clip del evento: `status` (`recording`, `ready`, `partial`, `missing`), `duration_seconds` y, si está en el bucket, una `url` firmada temporal. |
 | `GET /inference-logs`, `GET /inference-logs/{id}` | Logs operativos (filtros cámara, evento, nivel y fechas con zona horaria). |
 | `POST /predict` | Clasificación de un clip JSON independiente, sin política temporal. |
 
@@ -140,6 +141,22 @@ inactiva, se abre otra automáticamente. No se guardan frames, clips ni video.
 - **Retención:** con `SENTRIX_RETENTION_DAYS=N` (rol `all` o `api`) se borran cada hora las detecciones
   Normal que no abren ni cierran una alerta y los logs `inference_completed` con más de N días. Las
   alertas, sus detecciones y los demás eventos se conservan. Por defecto 7 días; `0` la desactiva.
+
+### Clips de eventos
+
+- **Quién graba:** el proceso que recibe el video (`all` o `worker`). Guarda en memoria los últimos
+  segundos de paquetes H.264 y, al abrirse una alerta, escribe un MP4 **sin recodificar** desde
+  `SENTRIX_CLIP_PRE_ROLL` segundos antes (5 por defecto: la alerta se confirma ~2 ventanas después de
+  que empieza la anomalía) hasta `SENTRIX_CLIP_POST_ROLL` segundos después del cierre (2 por defecto).
+  Tope: `SENTRIX_CLIP_MAX_SECONDS` (300). Un evento interrumpido deja un clip `partial`.
+- **Cortes abruptos:** el MP4 es fragmentado y se escribe al disco en cada paquete. Si el proceso muere,
+  al arrancar repara los `.part` (conserva los fragmentos completos) y sube lo pendiente.
+- **Dónde queda:** en `SENTRIX_CLIPS_DIR` (por defecto `backend/data/clips`) y, si están las variables
+  `SENTRIX_CLIPS_*` de un bucket S3 compatible (Cloudflare R2), se sube como `<cámara>/<alerta>.mp4` y se
+  borra del disco (`SENTRIX_CLIPS_KEEP_LOCAL=1` lo conserva). El estado vive en la tabla `alert_clips`.
+- **Cómo se reproduce:** `GET /alerts/{id}/clip` firma una URL de `SENTRIX_CLIP_URL_SECONDS` (600) para
+  el bucket privado; la API necesita las mismas variables `SENTRIX_CLIPS_*` para firmarla.
+- `SENTRIX_CLIPS=0` desactiva la grabación.
 
 ### Migraciones
 

@@ -46,6 +46,7 @@ class Session:
     last_policy_window: int = 0
     pending_alert_interruption: bool = False
     active_alert: dict | None = None  # fila de la alerta abierta; solo cambia al abrir, cerrar o interrumpir
+    clip_recorder: object = None  # graba el clip del evento cuando el transporte lo permite (RTSP)
 
     def snapshot(self):
         return {"session_id": self.id, "source_id": self.source_id,
@@ -92,8 +93,20 @@ class WebRTCReceiver:
                 kwargs.update(camera=session.source_id, session_id=session.id)
             await asyncio.to_thread(self.log_store.emit, event_type, message, **kwargs)
 
+    async def alert_opened(self, session, event):
+        """Gancho: se confirmó un evento. El receptor RTSP empieza su clip."""
+
+    async def alert_finished(self, session, alert_id, end_timestamp, *, complete, reason):
+        """Gancho: terminó un evento (cerrado o interrumpido)."""
+
     async def interrupt_alert(self, session, reason):
-        session.active_alert = None
+        alert, session.active_alert = session.active_alert, None
+        if alert is not None:
+            try:
+                await self.alert_finished(session, alert["id"], session.last_window_timestamp,
+                                          complete=False, reason=reason)
+            except Exception:
+                logger.exception("No se pudo cerrar el clip del evento interrumpido")
         if self.alert_store is not None:
             # El evento termina en la última ventana procesada antes del corte.
             count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason,

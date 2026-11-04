@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 import socket
+from pathlib import Path
 import time
 from uuid import uuid4
 from contextlib import asynccontextmanager
@@ -23,6 +24,9 @@ from app.application.inference import InferenceService
 from app.application.queries import RecordQueries
 from app.application.cameras import CameraService
 from app.application.retention import Retention
+from app.application.clips import ClipQueries
+from app.infrastructure.persistence.clips import ClipStore
+from app.infrastructure.clips.storage import ObjectStorage
 from app.application.errors import ApplicationError, InvalidInput, InvalidOffer, NotFound, Conflict, Unavailable
 from app.infrastructure.inference.mock import MockPredictor
 from app.infrastructure.persistence.cameras import CameraStore
@@ -64,9 +68,24 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     receiver_type = WebRTCReceiver
     receiver_options = {"detection_store": store, "log_store": log_store, "alert_store": alert_store}
     policy_factory = lambda: EventPolicy(event_policy.thresholds)
+    clip_store = ClipStore(store.path)
+    clip_storage = ObjectStorage.from_env()
+    clips = None
     if selected_transport == "rtsp":
         from app.infrastructure.streaming.rtsp import RTSPReceiver
         receiver_type = RTSPReceiver
+        # Quien procesa video graba los clips; la API solo los consulta.
+        if role != "api" and os.getenv("SENTRIX_CLIPS", "1").strip() != "0":
+            from app.infrastructure.clips.service import ClipService
+            clips = ClipService(
+                clip_store, clip_storage,
+                os.getenv("SENTRIX_CLIPS_DIR") or str(Path(__file__).resolve().parents[1] / "data" / "clips"),
+                pre_roll=float(os.getenv("SENTRIX_CLIP_PRE_ROLL", "5")),
+                post_roll=float(os.getenv("SENTRIX_CLIP_POST_ROLL", "2")),
+                max_seconds=float(os.getenv("SENTRIX_CLIP_MAX_SECONDS", "300")),
+                keep_local=os.getenv("SENTRIX_CLIPS_KEEP_LOCAL", "0").strip() == "1",
+                worker_id=os.getenv("SENTRIX_WORKER_ID") or socket.gethostname())
+            receiver_options["clips"] = clips
     def predict_window(frames, timestamp):
         window = Window(frames=frames, timestamp=timestamp)
         return Prediction.model_validate(app.state.predictor.predict(window)).model_dump(exclude_none=True)
@@ -115,6 +134,13 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                     finally:
                         connection.close()
             await asyncio.to_thread(initialize_storage)
+        if clips is not None:
+            try:
+                recovered = await asyncio.to_thread(clips.recover)
+                if recovered:
+                    logger.info("Clips pendientes de un corte anterior: %s", recovered)
+            except Exception:
+                logger.exception("No se pudieron recuperar los clips pendientes")
         if selected_transport == "rtsp":
             await camera_service.initialize_cameras()
         background = []
@@ -162,6 +188,9 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 except Exception:
                     logger.exception("No se pudieron liberar las cámaras del worker")
             await receiver.shutdown()
+            if clips is not None:
+                # Espera a que terminen las subidas en curso; lo que falte se retoma al reiniciar.
+                await asyncio.to_thread(clips.shutdown)
             await asyncio.to_thread(log_store.emit, "service_stopped", "Servicio de inferencia detenido")
             if real_mode:
                 app.state.predictor = None
@@ -187,7 +216,9 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     app.include_router(logs_router(RecordQueries(log_store,
         unavailable="Almacenamiento de logs no disponible", missing="Log no encontrado")))
     app.include_router(alerts_router(RecordQueries(alert_store,
-        unavailable="Almacenamiento de alertas no disponible", missing="Alerta no encontrada")))
+        unavailable="Almacenamiento de alertas no disponible", missing="Alerta no encontrada"),
+        ClipQueries(alert_store, clip_store, clip_storage,
+                    url_seconds=int(os.getenv("SENTRIX_CLIP_URL_SECONDS", "600")))))
     app.state.video_receiver = receiver
     app.state.role = role
     app.state.worker_id = worker_id
