@@ -47,6 +47,7 @@ class Session:
     pending_alert_interruption: bool = False
     active_alert: dict | None = None  # fila de la alerta abierta; solo cambia al abrir, cerrar o interrumpir
     clip_recorder: object = None  # graba el clip del evento cuando el transporte lo permite (RTSP)
+    alert_end_hint: float | None = None  # híbrido: fin marcado por VadCLIP mientras espera la unión
 
     def snapshot(self):
         return {"session_id": self.id, "source_id": self.source_id,
@@ -101,16 +102,17 @@ class WebRTCReceiver:
 
     async def interrupt_alert(self, session, reason):
         alert, session.active_alert = session.active_alert, None
+        # Híbrido: si VadCLIP ya había soltado, el evento termina ahí y no en la última ventana.
+        end = session.alert_end_hint if session.alert_end_hint is not None else session.last_window_timestamp
+        session.alert_end_hint = None
         if alert is not None:
             try:
-                await self.alert_finished(session, alert["id"], session.last_window_timestamp,
-                                          complete=False, reason=reason)
+                await self.alert_finished(session, alert["id"], end, complete=False, reason=reason)
             except Exception:
                 logger.exception("No se pudo cerrar el clip del evento interrumpido")
         if self.alert_store is not None:
             # El evento termina en la última ventana procesada antes del corte.
-            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason,
-                                            session.last_window_timestamp)
+            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason, end)
             if count:
                 await self.log_event("alert_interrupted", "Evento interrumpido: " + reason,
                                      session=session, level="WARNING")

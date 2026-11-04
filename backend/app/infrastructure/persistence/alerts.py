@@ -1,5 +1,5 @@
 """Transactional alert persistence and recovery."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 import time
 from functools import wraps
@@ -82,6 +82,51 @@ class AlertStore(DetectionStore):
                          detection["timestamp"]-active["timestamp_inicio"], active["id"]))
                     active = connection.execute("SELECT * FROM alerts WHERE id=?", (active["id"],)).fetchone()
                 return dict(active) if active is not None else None
+        finally:
+            connection.close()
+
+    @_retry_transaction
+    def open_event(self, detection, clase, confianza, threshold, start_timestamp=None):
+        """Híbrido: VadCLIP abrió el evento en `start_timestamp` (por defecto, el de la detección).
+
+        `confianza` es el puntaje de anomalía que lo abrió; la clase la da VideoMAE en `detection`.
+        """
+        start = detection["timestamp"] if start_timestamp is None else start_timestamp
+        if (clase not in DEFAULT_THRESHOLDS or not 0 <= confianza <= 1 or confianza < threshold
+                or start > detection["timestamp"]):
+            raise ValueError("Apertura de evento inválida")
+        opened_at = (datetime.fromisoformat(detection["fecha_hora"])
+                     - timedelta(seconds=detection["timestamp"] - start)).isoformat()
+        connection = self.connect()
+        try:
+            with connection:
+                if connection.execute("SELECT 1 FROM closed_alert_sessions WHERE session_id=?",
+                                      (detection["session_id"],)).fetchone():
+                    return None
+                connection.execute("""INSERT OR IGNORE INTO alerts
+                    (id, detection_id, camera, session_id, clase, confianza, threshold, timestamp,
+                     fecha_hora, timestamp_inicio, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                    (str(uuid4()), detection["id"], detection["camera"], detection["session_id"], clase,
+                     confianza, threshold, start, opened_at, start))
+                row = connection.execute("SELECT * FROM alerts WHERE session_id=? AND status='active'",
+                                         (detection["session_id"],)).fetchone()
+                return dict(row) if row is not None else None
+        finally:
+            connection.close()
+
+    @_retry_transaction
+    def close_event(self, alert_id, end_timestamp, clase, fecha_hora_fin, end_detection_id=None):
+        """Híbrido: VadCLIP cerró el evento; fija la clase final (promedio de VideoMAE dentro del evento)."""
+        if clase not in DEFAULT_THRESHOLDS:
+            raise ValueError("Clase final inválida")
+        connection = self.connect()
+        try:
+            with connection:
+                cursor = connection.execute("""UPDATE alerts SET status='closed', clase=?, end_detection_id=?,
+                    timestamp_fin=?, fecha_hora_fin=?, duracion_segundos=? - timestamp_inicio
+                    WHERE id=? AND status='active' AND timestamp_inicio <= ?""",
+                    (clase, end_detection_id, end_timestamp, fecha_hora_fin, end_timestamp, alert_id, end_timestamp))
+                return cursor.rowcount
         finally:
             connection.close()
 

@@ -56,10 +56,13 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     log_store = InferenceLogStore(log_db or database_url or os.getenv("SENTRIX_LOG_DB") or store.path)
     alert_store = AlertStore(store.path)
     event_policy = configured_event_policy()
-    selected_mode = mode or os.getenv("SENTRIX_PREDICTOR", "videomae")
-    real_mode = predictor is None and selected_mode == "videomae" and role != "api"
-    if predictor is None and selected_mode not in ("videomae", "mock"):
-        raise ValueError("SENTRIX_PREDICTOR debe ser videomae o mock")
+    # hybrid (predeterminado): VadCLIP abre y cierra la alerta y VideoMAE pone la clase.
+    # videomae: solo VideoMAE con la política EN-4 anterior. mock: simulador para pruebas.
+    selected_mode = (mode or os.getenv("SENTRIX_PREDICTOR", "hybrid")).strip().lower()
+    real_mode = predictor is None and selected_mode in ("videomae", "hybrid") and role != "api"
+    hybrid = real_mode and selected_mode == "hybrid"
+    if predictor is None and selected_mode not in ("hybrid", "videomae", "mock"):
+        raise ValueError("SENTRIX_PREDICTOR debe ser hybrid, videomae o mock")
     selected_transport = transport or os.getenv("SENTRIX_VIDEO_TRANSPORT", "rtsp")
     if selected_transport not in ("webrtc", "rtsp"):
         raise ValueError("SENTRIX_VIDEO_TRANSPORT debe ser webrtc o rtsp")
@@ -89,7 +92,15 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     def predict_window(frames, timestamp):
         window = Window(frames=frames, timestamp=timestamp)
         return Prediction.model_validate(app.state.predictor.predict(window)).model_dump(exclude_none=True)
-    if real_mode:
+    if hybrid:
+        from app.application.hybrid_processing import HybridContext, HybridProcessor
+        from app.domain.pipeline import HybridBuffer
+        from app.infrastructure.inference.hybrid import config_from_env, load_vadclip_metadata
+        hybrid_config = config_from_env(load_vadclip_metadata())
+        receiver = receiver_type(predict_window, hybrid_config, buffer_factory=HybridBuffer,
+                                 policy_factory=lambda: HybridContext(hybrid_config), **receiver_options)
+        receiver.processor = HybridProcessor(lambda: app.state.predictor)
+    elif real_mode:
         from app.infrastructure.inference.videomae import VideoMAEPredictor, load_metadata, config_from_metadata
         from app.domain.pipeline import VideoMAEBuffer
         receiver = receiver_type(
@@ -153,13 +164,20 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                     logger.exception("No se pudieron recuperar las alertas pendientes")
             if real_mode:
                 started = time.perf_counter()
-                await asyncio.to_thread(log_store.emit, "model_loading", "Iniciando carga de VideoMAE")
+                await asyncio.to_thread(log_store.emit, "model_loading",
+                                    "Iniciando carga de VadCLIP + VideoMAE" if hybrid else "Iniciando carga de VideoMAE")
                 try:
                     provider = os.getenv("SENTRIX_PROVIDER", "cuda")
                     if provider not in ("cuda", "cpu"):
                         raise ValueError("SENTRIX_PROVIDER debe ser cuda o cpu; no hay fallback automático")
-                    logger.info("Cargando VideoMAE (%s); esperar antes de conectar la fuente", provider)
-                    app.state.predictor = await asyncio.to_thread(VideoMAEPredictor, provider=provider)
+                    if hybrid:
+                        from app.infrastructure.inference.hybrid import HybridPredictor
+                        logger.info("Cargando VadCLIP + VideoMAE (%s); esperar antes de conectar la fuente", provider)
+                        app.state.predictor = await asyncio.to_thread(HybridPredictor, provider=provider)
+                    else:
+                        from app.infrastructure.inference.videomae import VideoMAEPredictor
+                        logger.info("Cargando VideoMAE (%s); esperar antes de conectar la fuente", provider)
+                        app.state.predictor = await asyncio.to_thread(VideoMAEPredictor, provider=provider)
                 except Exception:
                     await asyncio.to_thread(log_store.emit, "model_error", "No se pudo cargar el modelo",
                                             level="ERROR", processing_ms=round((time.perf_counter()-started)*1000, 3))

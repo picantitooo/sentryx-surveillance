@@ -1,7 +1,7 @@
 # SentriX — backend de inferencia
 
-Servicio FastAPI que recibe video RTSP/RTSPS desde MediaMTX, clasifica ventanas con
-VideoMAE en GPU y guarda detecciones, alertas y logs en PostgreSQL (Neon). El panel
+Servicio FastAPI que recibe video RTSP/RTSPS desde MediaMTX, detecta anomalías con VadCLIP y
+las clasifica con VideoMAE en GPU, y guarda detecciones, alertas y logs en PostgreSQL (Neon). El panel
 SvelteKit lo consulta por HTTP con `X-API-Key`.
 
 ## Requisitos
@@ -24,11 +24,12 @@ Copy-Item backend/.env.example backend/.env
 
 Completar `backend/.env` antes de arrancar (al menos `SENTRIX_DATABASE_URL` y
 `SENTRIX_CONTROL_API_KEY`). No instalar `onnxruntime` y `onnxruntime-gpu` en el mismo
-entorno. `start_gpu.ps1` fuerza VideoMAE, CUDA y transporte RTSP, y no inicia una segunda
-instancia si ya hay una sana en el puerto 8000. Equivalente manual:
+entorno. `start_gpu.ps1` fuerza CUDA y transporte RTSP (el modelo lo decide `SENTRIX_PREDICTOR`,
+por defecto el híbrido) y no inicia una segunda instancia si ya hay una sana en el puerto 8000.
+El híbrido necesita además `modelo/vadclip/clip_visual.onnx` y `vadclip_head.onnx` (fuera de git;
+están en el paquete de Piero `sentrix_vadclip_videomae_onnx_v1/models`). Equivalente manual:
 
 ```powershell
-$env:SENTRIX_PREDICTOR = 'videomae'
 $env:SENTRIX_PROVIDER = 'cuda'
 $env:SENTRIX_VIDEO_TRANSPORT = 'rtsp'
 .\.venv\Scripts\python.exe backend/run_server.py --host 127.0.0.1 --port 8000
@@ -76,7 +77,9 @@ El panel apunta solo a la API (puerto 8000). `GET /health` de la API lista los w
 |---|---|
 | `SENTRIX_DATABASE_URL` | Conexión PostgreSQL para detecciones, alertas, logs y cámaras. Obligatoria en operación. |
 | `SENTRIX_CONTROL_API_KEY` | Clave exigida en `X-API-Key`; debe coincidir con `INFERENCE_API_KEY` del frontend. |
-| `SENTRIX_PREDICTOR` / `SENTRIX_PROVIDER` | `videomae` o `mock` / `cuda` o `cpu`. |
+| `SENTRIX_PREDICTOR` / `SENTRIX_PROVIDER` | `hybrid` (predeterminado: VadCLIP + VideoMAE), `videomae` (solo VideoMAE con EN-4) o `mock` / `cuda` o `cpu`. |
+| `SENTRIX_VADCLIP_ROOT` | Carpeta de CLIP + cabezal VadCLIP (por defecto `modelo/vadclip`). |
+| `SENTRIX_HYBRID_THRESHOLD`, `_RELEASE`, `_MERGE_GAP`, `_MAX_EVENT_SECONDS`, … | Ajustes de la política del híbrido; por defecto los de `modelo/vadclip/metadata.json` (los del runner). |
 | `SENTRIX_VIDEO_TRANSPORT` | `rtsp` (predeterminado) o `webrtc` (modo alternativo de pruebas). |
 | `SENTRIX_SOURCE_ID`, `SENTRIX_CAMERA_NAME`, `SENTRIX_STREAM_PATH`, `SENTRIX_RTSP_*` | Cámara predeterminada en MediaMTX. `SENTRIX_RTSP_SHA256` es obligatoria con RTSPS. |
 | `SENTRIX_ALERT_THRESHOLDS` | JSON con los umbrales de las cuatro clases (ver EN-4). |
@@ -106,6 +109,30 @@ Errores controlados: 401 (API key), 404, 409, 413 (cuerpo > 2 MiB), 422 (entrada
 
 ## Flujo de video e inferencia
 
+### Híbrido (predeterminado): VadCLIP abre y cierra, VideoMAE clasifica
+
+Igual que el runner de Piero (`run_realtime_hybrid_onnx.py`), comprobado video por video en GPU:
+mismos puntajes (Δ < 1e-6), mismas aperturas y soltadas, mismas clases de VideoMAE.
+
+- **Cada 16 frames** (~0,53 s a 30 fps): el primer frame del bloque pasa por CLIP (vector de 512) y
+  el cabezal VadCLIP calcula el puntaje de anomalía con los últimos 8 vectores (~4,3 s).
+- **Abre** la alerta cuando el puntaje suavizado (2 actualizaciones) llega a 0,85. `alerts.confianza`
+  es ese puntaje y `threshold` 0,85; la clase inicial es la criminal más probable de VideoMAE.
+- **VideoMAE** solo corre con el evento abierto (y durante la espera de unión): al abrir, cada 4
+  bloques (64 frames, los mismos 16 frames de 61 que antes) y al soltar.
+- **Suelta** tras 3 actualizaciones bajo el umbral (~1,6 s). La alerta queda abierta 8 s
+  (`merge_gap`): si VadCLIP se reactiva, es el mismo evento; si no, se cierra con **fin = el momento
+  en que VadCLIP soltó** y la clase final = promedio de logits de VideoMAE dentro del evento. Si en
+  ese promedio gana Normal, se usa la clase criminal más probable (VadCLIP manda).
+- Eventos de más de 120 s se cortan en tramos (se cierra uno y se abre otro).
+- Detecciones: cada clasificación de VideoMAE y, sin evento, una Normal cada 4 bloques
+  (confianza = 1 − puntaje), el mismo ritmo de filas que con VideoMAE solo.
+- `GET /sources/{id}/status` → `latest_result` muestra `anomaly_score`, `vadclip_hint` y en `alert`
+  `incident` (VadCLIP sobre el umbral) y `closing` (esperando la unión).
+- El clip incluye la espera de unión: termina ~8 s + `SENTRIX_CLIP_POST_ROLL` después del fin.
+
+### VideoMAE solo (`SENTRIX_PREDICTOR=videomae`, política EN-4)
+
 - El backend consume el stream RTSP de MediaMTX por TCP y reintenta cada 3 s si se corta. Cada
   corte se registra una vez como `transport_error`; la recuperación, como `source_connected`.
 - Se toman los frames recibidos 0, 4, …, 60 de cada bloque de 64 (16 frames por ventana). Se
@@ -128,7 +155,7 @@ inactiva, se abre otra automáticamente. No se guardan frames, clips ni video.
   el umbral: `id`, `camera`, `fecha_hora` (UTC), `clase`, `confianza`, `timestamp` (segundos de la
   línea temporal del video, no fecha), `simulated`, `probabilities`, `session_id` y `window_id`
   (nulos en `POST /predict`, que devuelve el id en la cabecera `X-Detection-ID`).
-- **EN-4, `alerts`:** se abre un evento tras dos ventanas consecutivas de la misma clase criminal
+- **EN-4, `alerts`** (con el híbrido, ver arriba: lo abre y cierra VadCLIP): se abre un evento tras dos ventanas consecutivas de la misma clase criminal
   con confianza ≥ su umbral, y se cierra tras tres ventanas Normal consecutivas. Umbrales
   provisionales: Hurto .50, Robo .60, Agresión física .60, Vandalismo .55. Guarda detección de
   apertura y cierre, timestamps, duración y estado `active`/`closed`/`interrupted`.

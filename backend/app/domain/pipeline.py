@@ -126,3 +126,56 @@ class VideoMAEBuffer(WindowBuffer):
                 self.queue.task_done()
                 self.dropped += 1
             self.queue.put_nowait(window)
+
+
+class HybridBuffer(WindowBuffer):
+    """Bloques de 16 frames para el híbrido, como el runner de Piero.
+
+    De cada bloque guarda el primer frame (entrada de CLIP) y los frames 3, 7, 11 y 15, que son los que
+    VideoMAE toma de los últimos 61 cuando corre al final de un bloque (16 frames, uno de cada 4).
+    El bloque sale a la cola en su frame 15, con el timestamp de ese frame.
+    """
+    VIDEOMAE_POSITIONS = (3, 7, 11, 15)
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.frame_index = 0
+        self.first = None
+
+    def _restart(self):
+        self.partial.clear()
+        self.first = None
+        self.frame_index = 0
+        self.resets += 1
+
+    def push(self, frame, timestamp):
+        if timestamp is None or not math.isfinite(timestamp) or timestamp < 0:
+            self.invalid_timestamps += 1
+            self._restart()
+            self.last_timestamp = None
+            return
+        if self.last_timestamp is not None:
+            if timestamp == self.last_timestamp:
+                return
+            if timestamp < self.last_timestamp or timestamp - self.last_timestamp > 1:
+                self._restart()
+        self.last_timestamp = timestamp
+        position = self.frame_index % self.config.sampling_stride
+        self.frame_index += 1
+        if position == 0:
+            self.first = frame
+            self.partial = []
+        if position in self.VIDEOMAE_POSITIONS:
+            self.partial.append(frame)
+            self.sampled += 1
+        if position == self.config.sampling_stride - 1 and self.first is not None and len(self.partial) == 4:
+            self.created += 1
+            block = (self.created, {"clip": self.first, "videomae": self.partial, "timestamp": timestamp,
+                                    "epoch": self.resets})
+            self.partial = []
+            self.first = None
+            if self.queue.full():
+                self.queue.get_nowait()
+                self.queue.task_done()
+                self.dropped += 1
+            self.queue.put_nowait(block)
