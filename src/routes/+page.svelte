@@ -268,7 +268,7 @@
         next[item.id] = { available: snapshot.available, source, latestDetection, detections: latestDetection ? [{ ...latestDetection, camera: item.id }] : [], alerts: [] };
       }
       inferenceByCamera = next;
-      activeAlertsSummary = snapshot.alerts ?? [];
+      activeAlertsSummary = (snapshot.alerts ?? []).map(normalizeAlertTiming);
     } catch (e) {
       inferenceByCamera = Object.fromEntries(cameras.map((item) => [item.id, { available: false, source: null, alerts: [], detections: [], error: errorMessage(e) }]));
       activeAlertsSummary = [];
@@ -325,7 +325,7 @@
     if (!options.force) {
       const cached = readOperationalCache<AlertListResponse>(cacheKey);
       if (cached) {
-        allAlerts = cached.items ?? [];
+        allAlerts = (cached.items ?? []).map(normalizeAlertTiming);
         alertTotal = cached.total ?? null;
         return;
       }
@@ -334,7 +334,7 @@
     try {
       const offset = (alertPage - 1) * ALERT_PAGE_SIZE;
       const data = await getJSON<AlertListResponse>(`/api/alerts?limit=${ALERT_PAGE_SIZE}&offset=${offset}`);
-      allAlerts = data.items ?? [];
+      allAlerts = (data.items ?? []).map(normalizeAlertTiming);
       alertTotal = data.total ?? null;
       writeOperationalCache(cacheKey, data);
     } catch (e) {
@@ -361,7 +361,7 @@
     stopClipPolling(); selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
     try {
       const detail = alert.id ? await getJSON<Alert>(`/api/alerts/${encodeURIComponent(alert.id)}`) : alert;
-      selectedAlert = detail;
+      selectedAlert = normalizeAlertTiming(detail);
       if (detail.id) await loadClip(detail.id);
       else clip = { status: 'missing', url: null };
     } catch (e) { clipError = errorMessage(e); }
@@ -459,15 +459,31 @@
     } catch (e) { error = errorMessage(e); }
     finally { busy = false; }
   }
-  function fmtDate(value: string | Date | null | undefined) {
-    if (!value) return '—';
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('es-PE', { timeZone: 'America/Lima', dateStyle: 'short', timeStyle: 'medium' });
+  function toDate(value: unknown): Date | null {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+    const date = Number.isFinite(numeric)
+      ? new Date(Math.abs(numeric) < 100_000_000_000 ? numeric * 1_000 : numeric)
+      : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date;
   }
-  function fmtTime(value: string | Date | null | undefined) {
-    if (!value) return '—';
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('es-PE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  function validEventDate(value: unknown): string | null {
+    const date = toDate(value);
+    return date && date.getUTCFullYear() >= 2020 ? date.toISOString() : null;
+  }
+  function normalizeAlertTiming(alert: Alert): Alert {
+    const start = validEventDate(alert.timestamp_inicio) ?? validEventDate(alert.fecha_hora) ?? validEventDate(alert.created_at);
+    const end = validEventDate(alert.timestamp_fin) ?? validEventDate(alert.fecha_hora_fin);
+    return { ...alert, timestamp_inicio: start ?? undefined, timestamp_fin: end ?? undefined };
+  }
+  function fmtDate(value: unknown) {
+    const d = toDate(value);
+    return d ? d.toLocaleString('es-PE', { timeZone: 'America/Lima', dateStyle: 'short', timeStyle: 'medium' }) : '—';
+  }
+  function fmtTime(value: unknown) {
+    const d = toDate(value);
+    return d ? d.toLocaleTimeString('es-PE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—';
   }
   function confidence(value: unknown) {
     const n = Number(value);
