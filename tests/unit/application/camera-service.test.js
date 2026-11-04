@@ -90,8 +90,29 @@ test('actualiza nombre y fuente a través del registro remoto', async () => {
   const updated = await service.update('camara1', {
     name: 'Puerta principal', normalizedUrl: 'https://media.example/camera02', streamPath: 'camera02'
   });
-  assert.equal(updated.name, 'Puerta principal');
-  assert.equal(updated.streamPath, 'camera02');
+  assert.equal(updated.camera.name, 'Puerta principal');
+  assert.equal(updated.camera.streamPath, 'camera02');
+});
+
+test('detiene y reinicia una cámara activa al editarla', async () => {
+  const calls = [];
+  const cameras = [{ id: 'camara1', name: 'Entrada', streamPath: 'camera01', active: true }];
+  let waited = 0;
+  const service = createCameraService({
+    inferenceClient: async (path, options = {}) => {
+      calls.push({ path, options });
+      return { status: 'running' };
+    },
+    cameraRegistry: registry(cameras),
+    wait: async (milliseconds) => { waited = milliseconds; }
+  });
+  const result = await service.update('camara1', {
+    name: 'Puerta principal', normalizedUrl: 'https://media.example/camera02', streamPath: 'camera02'
+  });
+  assert.deepEqual(calls.map((call) => call.path), ['/sources/camara1', '/sources/start']);
+  assert.equal(waited, 5_000);
+  assert.equal(result.inference.available, true);
+  assert.equal(result.camera.streamPath, 'camera02');
 });
 
 test('remove no llama al backend cuando la cámara no existe', async () => {

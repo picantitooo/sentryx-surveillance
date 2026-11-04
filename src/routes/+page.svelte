@@ -11,7 +11,7 @@
 
   type ViewId = 'overview' | 'monitor' | 'cameras' | 'detections' | 'alerts' | 'service';
   type LogLevel = 'all' | 'INFO' | 'WARNING' | 'ERROR' | 'DEBUG' | 'CRITICAL';
-  interface Camera { id: string; number?: number; name: string; url: string; streamPath?: string; registeredAt: string; }
+  interface Camera { id: string; number?: number; name: string; url: string; streamPath?: string; registeredAt: string; active?: boolean; }
   interface Detection { id?: string; camera?: string; fecha_hora?: string; created_at?: string; clase?: string; class_name?: string; confianza?: number; processing_ms?: number; status?: string; }
   interface Alert extends Detection { timestamp_inicio?: string; timestamp_fin?: string; fecha_hora_fin?: string; duracion_segundos?: number; interruption_reason?: string; threshold?: number; }
   interface AlertListResponse { items?: Alert[]; total?: number; limit?: number; offset?: number; }
@@ -404,13 +404,14 @@
       const parsedUrl = new URL(url.trim());
       if (parsedUrl.protocol !== 'https:') throw new Error('La dirección de la cámara debe utilizar HTTPS. Ejemplo: https://servidor/camera01/');
       if (editingCamera) {
-        const data = await getJSON<{ camera: Camera }>(`/api/camera?id=${encodeURIComponent(editingCamera.id)}`, {
+        const data = await getJSON<RegisterCameraResponse>(`/api/camera?id=${encodeURIComponent(editingCamera.id)}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
         });
         cameras = cameras.map((item) => item.id === editingCamera?.id ? data.camera : item);
         clearOperationalCache();
         selectedId = data.camera.id;
-        notice = 'Cámara actualizada. Si cambiaste la fuente, reintenta el análisis.';
+        notice = data.inference?.available === false ? 'Cámara actualizada, pero no se pudo reiniciar el análisis.' : 'Cámara actualizada y análisis reiniciado.';
+        if (data.inference?.error) error = data.inference.error;
       } else {
         const data = await getJSON<RegisterCameraResponse>('/api/camera', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url })
@@ -679,7 +680,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Registro</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -792,7 +793,7 @@
         <label for="url">Dirección WebRTC segura <span>*</span></label><input id="url" type="url" required pattern="https://.*" title="La dirección debe comenzar con https://" bind:value={url} placeholder="https://servidor/camera01/" />
         <p class="form-help">Por seguridad, solo se permiten direcciones que comiencen con <strong>https://</strong>.</p>
         <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si cambias la ruta, reinicia el análisis desde el inventario para aplicar la nueva fuente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
-        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? 'Guardando...' : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
+        <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration} disabled={busy}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? (editingCamera ? 'Aplicando cambios...' : 'Registrando...') : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
       </form>
     </div>
   </div>
