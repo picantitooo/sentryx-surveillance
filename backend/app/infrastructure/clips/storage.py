@@ -24,6 +24,10 @@ class ObjectStorage:
     def upload(self, path, key):
         self.client.upload_file(path, self.bucket, key, ExtraArgs={"ContentType": "video/mp4"})
 
+    def delete(self, key):
+        # S3/R2 responde OK aunque el objeto ya no exista, así que repetir el borrado es seguro.
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
     def url(self, key, expires=600):
         # URL temporal: el bucket es privado y el panel nunca recibe credenciales.
         return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": key},

@@ -132,6 +132,20 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     retention = (Retention(alert_store, log_store, days=retention_days,
                            interval=float(os.getenv("SENTRIX_RETENTION_INTERVAL", "3600")))
                  if retention_days > 0 and role != "worker" else None)
+    # Clips en el bucket: al pasar el tope de espacio se borran los más antiguos (0 lo desactiva).
+    clips_max_gb = float(os.getenv("SENTRIX_CLIPS_MAX_GB", "8") or 0)
+    clip_retention = None
+    if clips_max_gb > 0 and clip_storage is not None and role != "worker":
+        from app.application.clip_retention import ClipRetention
+
+        def report_clip_purge(deleted, freed, total):
+            log_store.emit("clips_purged", f"Espacio de clips: {deleted} borrados ({freed / 1e6:.0f} MB), "
+                                          f"quedan {total / 1e6:.0f} MB de {clips_max_gb:g} GB")
+
+        clip_retention = ClipRetention(
+            clip_store, clip_storage, max_bytes=int(clips_max_gb * 1e9),
+            target=float(os.getenv("SENTRIX_CLIPS_PURGE_TARGET", "0.8")),
+            interval=float(os.getenv("SENTRIX_CLIPS_PURGE_INTERVAL", "300")), on_purge=report_clip_purge)
     @asynccontextmanager
     async def lifespan(app):
         if database_url:
@@ -192,6 +206,8 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 background.append(asyncio.create_task(coordinator.run()))
             if retention is not None:
                 background.append(asyncio.create_task(retention.run()))
+            if clip_retention is not None:
+                background.append(asyncio.create_task(clip_retention.run()))
             await asyncio.to_thread(log_store.emit, "service_started", "Servicio de inferencia iniciado" +
                                     ("" if role == "all" else f" (rol {role}" +
                                      (f", worker {worker_id})" if worker_id else ")")))

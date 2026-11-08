@@ -66,6 +66,27 @@ class ClipStore:
         finally:
             connection.close()
 
+    def stored(self):
+        """Clips que ocupan espacio en el bucket, del más antiguo al más nuevo: (alert_id, object_key, size)."""
+        connection = self.connect()
+        try:
+            rows = connection.execute("""SELECT alert_id, object_key, COALESCE(size_bytes, 0) AS size_bytes
+                FROM alert_clips WHERE object_key IS NOT NULL AND status IN ('ready', 'partial')
+                ORDER BY started_at, alert_id""").fetchall()
+            return [(row["alert_id"], row["object_key"], row["size_bytes"]) for row in rows]
+        finally:
+            connection.close()
+
+    def mark_purged(self, alert_id):
+        """El video ya no está en el bucket: el panel lo verá como `missing` con motivo `purged_for_space`."""
+        connection = self.connect()
+        try:
+            with connection:
+                return connection.execute("""UPDATE alert_clips SET status='missing', object_key=NULL,
+                    reason='purged_for_space', updated_at=? WHERE alert_id=?""", (_now(), alert_id)).rowcount
+        finally:
+            connection.close()
+
     def get(self, alert_id):
         connection = self.connect()
         try:
