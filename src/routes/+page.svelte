@@ -62,6 +62,7 @@
   let formError = $state('');
   let authProfile = $state<AuthProfile | null>(null);
   let authBlocked = $state('');
+  let authReady = $state(false);
   let showPlayer = $state(true);
   let monitorExpanded = $state(false);
   let monitorPage = $state(1);
@@ -404,11 +405,11 @@
     } catch { /* Las preferencias son opcionales. */ }
     const boot = async () => {
       const clerk = await getClerk();
-      if (clerk && !clerk.user) { window.location.replace('/sign-in'); return; }
-      if (clerk) {
-        try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
-        catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
-      }
+      if (!clerk) { authBlocked = 'El acceso seguro aún no está configurado. Configura PUBLIC_CLERK_PUBLISHABLE_KEY.'; loading = false; return; }
+      if (!clerk.user) { window.location.replace('/sign-in'); return; }
+      try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
+      catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
+      authReady = true;
       await loadCamera();
       if (!mounted) return;
       refreshAllInference();
@@ -628,6 +629,11 @@
   <title>SentriX — Centro de monitoreo</title>
   <meta name="description" content="Monitoreo, detecciones y alertas de cámaras con MediaMTX y FastAPI" />
 </svelte:head>
+{#if authBlocked}
+  <main class="auth-gate"><section><img src="/sentrix-logo-192.png" alt="SentriX" /><h1>Acceso no disponible</h1><p>{authBlocked}</p><a href="/sign-in">Ir al inicio de sesión</a></section></main>
+{:else if !authReady}
+  <main class="auth-gate" aria-live="polite"><section><img src="/sentrix-logo-192.png" alt="SentriX" /><h1>Verificando sesión</h1><p>Comprobando acceso seguro al panel…</p></section></main>
+{:else}
 <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
 
 <div class="shell" class:a11y-high-contrast={highContrast} class:a11y-reduced-motion={reducedMotion} class:a11y-text-large={textSize === 'large'} class:a11y-text-xlarge={textSize === 'xlarge'} class:a11y-dyslexia={dyslexiaMode} class:a11y-letter-spacing={letterSpacing} class:a11y-aligned-text={alignedText}>
@@ -854,6 +860,7 @@
 {#if selectedAlert}
   <AlertDetailDialog alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
 {/if}
+{/if}
 
 {#if modal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeRegistration(); }}>
@@ -876,6 +883,7 @@
   :global(body){margin:0;background:#f5f7fb;color:#172a45;font-family:Inter,'Segoe UI',system-ui,sans-serif;font-size:14px}
   :global(button),:global(input),:global(select){font:inherit}
   :global(button){cursor:pointer}
+  .auth-gate{min-height:100vh;display:grid;place-items:center;padding:24px;background:linear-gradient(135deg,#edf5fb,#f8fbff)}.auth-gate section{width:min(100%,420px);padding:38px;border:1px solid #d9e5ef;border-radius:16px;background:#fff;box-shadow:0 16px 45px #143b641a;text-align:center}.auth-gate img{width:70px;height:70px;object-fit:contain}.auth-gate h1{margin:18px 0 8px;color:#0b315e;font-size:25px}.auth-gate p{color:#52708c;line-height:1.6}.auth-gate a{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:7px;background:#075dad;color:#fff;text-decoration:none;font-weight:750}
   .shell{min-height:100vh;display:flex}
   .sidebar{width:247px;flex-shrink:0;background:#0e2545;color:#eaf2fc;display:flex;flex-direction:column;min-height:100vh;position:sticky;top:0;height:100vh}
   .brand{display:flex;align-items:center;gap:11px;padding:28px 25px 26px;color:inherit;text-decoration:none;border-bottom:1px solid #294261}
