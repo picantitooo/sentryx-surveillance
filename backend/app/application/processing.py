@@ -55,16 +55,34 @@ class WindowProcessor:
                         continue
                     result = session.alert_policy.update(result, samples[-1][1])
                     if runtime.alert_store is not None and detection is not None:
-                        stage = "alert_storage"
-                        event = await asyncio.to_thread(runtime.alert_store.apply, result, detection)
+                        event = None
+                        # Solo abrir o cerrar cambia la alerta. apply bloquea la tabla alerts para todas las
+                        # cámaras, así que las ventanas intermedias usan la fila que se guardó al abrirla.
+                        if result["alert"]["started"] or result["alert"]["ended"]:
+                            stage = "alert_storage"
+                            event = await asyncio.to_thread(runtime.alert_store.apply, result, detection)
+                            session.active_alert = event if event and event["status"] == "active" else None
+                        elif result["alert"]["active"]:
+                            event = session.active_alert
                         result["alert"]["id"] = event["id"] if event else None
                         result["alert"]["status"] = event["status"] if event else None
                         if result["alert"]["started"] or result["alert"]["ended"]:
                             await runtime.log_event("alert_opened" if result["alert"]["started"] else "alert_closed",
                                 "Evento confirmado" if result["alert"]["started"] else "Regreso a Normal confirmado",
                                 session=session, window_id=window_id, detection_id=detection["id"])
+                        # El clip nunca debe frenar la inferencia ni perder la alerta.
+                        try:
+                            if result["alert"]["started"] and session.active_alert is not None:
+                                await runtime.alert_opened(session, session.active_alert)
+                            elif result["alert"]["ended"] and event is not None:
+                                await runtime.alert_finished(session, event["id"], event.get("timestamp_fin"),
+                                                             complete=True, reason="closed")
+                        except Exception:
+                            logger.exception("No se pudo actualizar el clip de %s", session.source_id)
                     session.policy_epoch = epoch
                     session.last_policy_window = number
+                    if detection is not None:
+                        session.last_window_timestamp = detection["timestamp"]
                 session.latest_result = {
                     **result, "session_id": session.id, "source_id": session.source_id,
                     **({"detection_id": detection["id"]} if detection else {}),

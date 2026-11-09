@@ -1,50 +1,19 @@
-# SentriX — backend VideoMAE en GPU
+# SentriX — backend de inferencia
 
-## EN-4: eventos confirmados con inicio y fin
+Servicio FastAPI que recibe video RTSP/RTSPS desde MediaMTX, detecta anomalías con VadCLIP y
+las clasifica con VideoMAE en GPU, y guarda detecciones, alertas y logs en PostgreSQL (Neon). El panel
+SvelteKit lo consulta por HTTP con `X-API-Key`.
 
-El stream abre un único evento por sesión tras dos ventanas consecutivas de la
-misma clase criminal sobre su threshold (comparación >=). Tres ventanas
-consecutivas Normal cierran ese evento. Guarda las detecciones de apertura/cierre,
-timestamps del video, duración y estado active/closed/interrupted. Desconexiones,
-fallos, ventanas perdidas y reinicios interrumpen el evento sin inventar un regreso
-a Normal. Los eventos comparten el archivo SQLite de EN-3.
+## Requisitos
 
-Thresholds provisionales: Hurto .50, Robo .60, Agresión física .60, Vandalismo .55.
-`SENTRIX_ALERT_THRESHOLDS` acepta JSON con las cuatro clases. La política del
-stream usa clase/confianza originales sin suavizado; reemplaza el umbral global
-y el cierre por ausencia de candidato de la política anterior. El modelo y su
-preprocesamiento permanecen iguales. Ejecutar un único proceso del backend.
-
-`GET /alerts` permite filtrar por camera/status y paginar; `GET /alerts/{id}`
-devuelve el evento persistido. POST /predict continúa siendo independiente y
-no evalúa intervalos temporales. El mock de stream sí permite probar la política.
-
-## TA-4: logs operativos persistentes
-
-El servicio registra inicio/cierre, carga del modelo, conexiones de fuentes,
-errores e inferencias con sus tiempos en `backend/data/inference_logs.sqlite3`.
-`SENTRIX_LOG_DB` permite configurar otra ruta. Este historial es independiente
-de EN-3 y no contiene frames ni clips; respaldar el archivo para conservarlo.
-No hay limpieza automática ni reintento durable de logs que fallen al escribirse.
-Una falla de logs no interrumpe la inferencia, y la consulta devuelve 503 si
-el almacenamiento no está disponible.
-
-Consulta: `GET /inference-logs` y `GET /inference-logs/{log_id}`. Incluye filtros
-por cámara, evento, nivel y fechas con zona horaria, además de paginación.
-
-El backend carga el modelo ONNX de `../modelo` una vez al arrancar y ejecuta
-una inferencia de calentamiento antes de aceptar conexiones. El modo predeterminado
-es `videomae` con `cuda`; una carga fallida impide arrancar. No se sustituye
-el modelo real por CPU ni por MockPredictor automáticamente.
-
-**Conexión actual: LiveKit.** El backend se suscribe al video de Gabriel y Mari
-consulta los resultados por las mismas rutas HTTP. Configurar `backend/.env` con
-las variables `LIVEKIT_*` (URL, sala, identidad del emisor y credenciales). La conexión WebRTC directa
-se conserva como alternativa explícita para pruebas.
+- **Python 3.11 o superior.** El servicio se detiene al arrancar con una versión anterior.
+- GPU NVIDIA con controlador compatible con `onnxruntime-gpu` (modo predeterminado).
+- Pesos `modelo/videomae_crime5_continuous.onnx` y `.onnx.data`, juntos (ver [modelo/README.md](../modelo/README.md)).
+- Una base PostgreSQL accesible (`SENTRIX_DATABASE_URL`).
 
 ## Instalar y arrancar
 
-Desde la raíz del repositorio, PowerShell:
+Desde la raíz del repositorio, en PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -53,148 +22,244 @@ Copy-Item backend/.env.example backend/.env
 .\backend\start_gpu.ps1
 ```
 
-Instalar las dependencias en cada equipo. Mantener juntos `.onnx` y
-`.onnx.data`. No instalar simultáneamente onnxruntime CPU y onnxruntime-gpu.
-Si hay un servidor anterior en el puerto 8000, detenerlo con Ctrl+C primero.
-El script fuerza GPU. Equivalente manual:
+Completar `backend/.env` antes de arrancar (al menos `SENTRIX_DATABASE_URL` y
+`SENTRIX_CONTROL_API_KEY`). No instalar `onnxruntime` y `onnxruntime-gpu` en el mismo
+entorno. `start_gpu.ps1` fuerza CUDA y transporte RTSP (el modelo lo decide `SENTRIX_PREDICTOR`,
+por defecto el híbrido) y no inicia una segunda instancia si ya hay una sana en el puerto 8000.
+El híbrido necesita además `modelo/vadclip/clip_visual.onnx` y `vadclip_head.onnx` (fuera de git;
+están en el paquete de Piero `sentrix_vadclip_videomae_onnx_v1/models`). Equivalente manual:
 
 ```powershell
-$env:SENTRIX_PREDICTOR = 'videomae'
 $env:SENTRIX_PROVIDER = 'cuda'
-$env:SENTRIX_VIDEO_TRANSPORT = 'livekit'
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
+$env:SENTRIX_VIDEO_TRANSPORT = 'rtsp'
+.\.venv\Scripts\python.exe backend/run_server.py --host 127.0.0.1 --port 8000
 ```
 
-Esperar `Application startup complete`. Consultar http://localhost:8000/health:
-debe informar `model_loaded: true`, `gpu_active: true` y
-`CUDAExecutionProvider` en `providers`. Swagger: http://localhost:8000/docs.
-El servicio continúa usando la red privada Tailscale y CORS configurable por
-`FRONTEND_ORIGINS`. Todas las rutas excepto `/health`, `/docs`, `/redoc` y
-`/openapi.json` exigen el encabezado `X-API-Key` con el valor de
-`SENTRIX_CONTROL_API_KEY`; en Swagger se envía con Authorize.
+Esperar `Application startup complete` y revisar http://localhost:8000/health:
+`model_loaded: true`, `gpu_active: true` y `CUDAExecutionProvider` en `providers`.
+Swagger: http://localhost:8000/docs (botón Authorize para la API key).
 
-Para ejecutar CPU deliberadamente, cambiar `SENTRIX_PROVIDER=cpu` en el comando
-manual. Para pruebas con el simulador, `SENTRIX_PREDICTOR=mock`; /health declara
-`model_loaded: false` y las predicciones `simulated: true`.
-`start_gpu.ps1` siempre selecciona el modelo real, CUDA y recepción LiveKit.
+Ejecutar un único proceso: sesiones, colas y política de alertas viven en memoria.
+Si el modelo no carga, el servicio no arranca; no cambia en silencio a CPU ni al simulador.
+Para usar CPU de forma deliberada, `SENTRIX_PROVIDER=cpu`. Para pruebas sin modelo,
+`SENTRIX_PREDICTOR=mock` (`/health` informa `model_loaded: false` y cada predicción lleva
+`simulated: true`).
+
+## Escalamiento horizontal (roles)
+
+`SENTRIX_ROLE` separa el servicio en procesos que comparten la base PostgreSQL:
+
+| Rol | Qué hace |
+|---|---|
+| `all` (predeterminado) | Un solo proceso hace todo, como antes. |
+| `api` | Atiende al panel. No carga el modelo: `POST /sources/start` registra que la cámara debe correr y `GET /sources/{id}/status` muestra lo que publica el worker dueño. |
+| `worker` | Procesa cámaras y carga el modelo, salvo que use un servidor de inferencia. Cada cámara la procesa un solo worker (lease en la base). |
+| `inference` | Solo los modelos (CLIP, cabezal VadCLIP y VideoMAE) en la GPU. Sin base de datos ni cámaras. |
+
+Cada worker renueva sus cámaras cada `SENTRIX_COORDINATION_INTERVAL` s (2) y toma como máximo una
+cámara libre por ciclo, solo si es de los menos cargados, hasta `SENTRIX_WORKER_CAPACITY` (2). Si un
+worker se apaga de golpe, sus cámaras pasan a otro cuando vence el lease (`SENTRIX_LEASE_TTL`, 15 s) y
+se interrumpen sus alertas abiertas (`worker_lost`). Con un apagado ordenado (Ctrl+C) las libera al
+instante. Las cámaras ya asignadas no se redistribuyen al sumar workers.
+
+En local, cada proceso en su propia terminal (los workers comparten la GPU):
+
+```powershell
+$env:SENTRIX_ROLE = 'api';    .\.venv\Scripts\python.exe backend/run_server.py --port 8000
+$env:SENTRIX_ROLE = 'worker'; .\.venv\Scripts\python.exe backend/run_server.py --port 8001
+$env:SENTRIX_ROLE = 'worker'; .\.venv\Scripts\python.exe backend/run_server.py --port 8002
+```
+
+El panel apunta solo a la API (puerto 8000). `GET /health` de la API lista los workers vivos y sus cámaras.
+
+### Servidor de inferencia compartido
+
+Con varios workers en una sola GPU, cada uno cargaría su copia de los modelos y llenaría la VRAM. Para
+compartirlos, arrancar el servidor con `.\backend\start_inference.ps1` (puerto 8099; `-BindHost` con la IP
+de Tailscale para workers en otras máquinas) y poner en cada worker
+`SENTRIX_INFERENCE_URL=http://<host>:8099`. Solo funciona con `SENTRIX_PREDICTOR=hybrid` y el worker no
+necesita los pesos ni GPU, pero sí `modelo/vadclip/metadata.json`.
+
+El worker guarda el estado de cada cámara y recorta en CPU; el servidor no guarda nada por cámara y atiende
+`POST /infer/detect` y `POST /infer/classify` con `X-API-Key`. Si se cae, cada bloque fallido interrumpe la
+alerta (`processing_error`), el worker sigue vivo y retoma solo cuando el servidor vuelve.
+
+### Workers en Azure
+
+`deploy/azure` crea hasta 3 VMs con Terraform y despliega en ellas el último commit, con el servidor de
+inferencia en un equipo con GPU conectado por Tailscale. Requiere Terraform, Azure CLI con sesión iniciada,
+Tailscale, la llave `~/.ssh/sentrix_azure`, `deploy/azure/terraform/terraform.tfvars` y el puerto 8099 abierto
+solo para Tailscale. La clave de Tailscale debe ser reutilizable y no efímera.
+
+```powershell
+.\backend\start_inference.ps1 -BindHost <IP de Tailscale del equipo>
+$s = Read-Host "Clave de Tailscale" -AsSecureString; $env:TAILSCALE_AUTHKEY = [System.Net.NetworkCredential]::new("", $s).Password
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py subir --capacidad 6
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py autoescalar --capacidad 4
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py bajar
+```
+
+`subir` deja cada worker con un tope de 6 cámaras y `autoescalar` calcula con 4 por VM: si cae una VM, las demás
+absorben sus cámaras. `bajar` detiene los workers, comprueba que no queden clips sin subir y destruye todo. Las VMs
+cobran mientras existan.
+
+## Configuración (`backend/.env`)
+
+| Variable | Uso |
+|---|---|
+| `SENTRIX_DATABASE_URL` | Conexión PostgreSQL para detecciones, alertas, logs y cámaras. Obligatoria en operación. |
+| `SENTRIX_CONTROL_API_KEY` | Clave exigida en `X-API-Key`; debe coincidir con `INFERENCE_API_KEY` del frontend. |
+| `SENTRIX_PREDICTOR` / `SENTRIX_PROVIDER` | `hybrid` (predeterminado: VadCLIP + VideoMAE), `videomae` (solo VideoMAE con EN-4) o `mock` / `cuda` o `cpu`. |
+| `SENTRIX_VADCLIP_ROOT` | Carpeta de CLIP + cabezal VadCLIP (por defecto `modelo/vadclip`). |
+| `SENTRIX_HYBRID_THRESHOLD`, `_RELEASE`, `_MERGE_GAP`, `_MAX_EVENT_SECONDS`, … | Ajustes de la política del híbrido; por defecto los de `modelo/vadclip/metadata.json` (los del runner). |
+| `SENTRIX_VIDEO_TRANSPORT` | `rtsp` (predeterminado) o `webrtc` (modo alternativo de pruebas). |
+| `SENTRIX_SOURCE_ID`, `SENTRIX_CAMERA_NAME`, `SENTRIX_STREAM_PATH`, `SENTRIX_RTSP_*` | Cámara predeterminada en MediaMTX. `SENTRIX_RTSP_SHA256` es obligatoria con RTSPS. |
+| `SENTRIX_ALERT_THRESHOLDS` | JSON con los umbrales de las cuatro clases (ver EN-4). |
+| `TA2_QUEUE_SIZE` | Ventanas en cola por sesión, de 1 a 4 (predeterminado 2). |
+| `FRONTEND_ORIGINS` | Orígenes CORS permitidos, separados por comas. |
+| `SENTRIX_ROLE` | `all`, `api`, `worker` o `inference` (ver Escalamiento horizontal). |
+| `SENTRIX_INFERENCE_URL`, `SENTRIX_INFERENCE_API_KEY` | Servidor de inferencia compartido y su clave (por defecto `SENTRIX_CONTROL_API_KEY`). Vacío: cada worker carga los modelos. |
+| `SENTRIX_MODEL_ROOT` | Carpeta del modelo VideoMAE (por defecto `modelo`). |
+| `SENTRIX_WORKER_CAPACITY`, `SENTRIX_LEASE_TTL`, `SENTRIX_COORDINATION_INTERVAL`, `SENTRIX_WORKER_ID` | Ajustes de los workers (2 cámaras, 15 s, 2 s, id automático). |
+| `SENTRIX_DETECTION_DB`, `SENTRIX_LOG_DB` | Solo sin `SENTRIX_DATABASE_URL`: archivos SQLite para pruebas locales. |
+
+## API
+
+Todas las rutas exigen `X-API-Key`, salvo `/health`, `/docs`, `/redoc` y `/openapi.json`.
+
+| Ruta | Uso |
+|---|---|
+| `GET /health` | Estado del modelo, GPU y transporte. |
+| `GET/POST /cameras`, `GET/PUT/DELETE /cameras/{source_id}` | Inventario de cámaras. |
+| `POST /sources/start`, `GET /sources`, `GET /sources/{id}/status`, `DELETE /sources/{id}` | Iniciar, consultar y detener el análisis de una cámara. |
+| `GET /detections`, `GET /detections/{id}` | Historial de inferencias (filtro `camera`, `limit` 1–500, `offset`). |
+| `GET /alerts`, `GET /alerts/{id}` | Eventos confirmados (filtros `camera`, `status`; paginación). |
+| `GET /alerts/{id}/clip` | Clip del evento: `status` (`recording`, `ready`, `partial`, `missing`), `duration_seconds` y, si está en el bucket, una `url` firmada temporal. |
+| `GET /inference-logs`, `GET /inference-logs/{id}` | Logs operativos (filtros cámara, evento, nivel y fechas con zona horaria). |
+| `POST /predict` | Clasificación de un clip JSON independiente, sin política temporal. |
+
+Errores controlados: 401 (API key), 404, 409, 413 (cuerpo > 2 MiB), 422 (entrada inválida) y 503
+(modelo o almacenamiento no disponible).
 
 ## Flujo de video e inferencia
 
-En modo LiveKit, Gabriel publica video en la sala y el backend se suscribe a su
-identidad. Mari recibe el video desde LiveKit. Se mantienen GET /webrtc/sessions
-y GET /webrtc/sessions/{session_id}, con latest_result de esa fuente.
-La conexión WebRTC directa anterior está disponible solo con
-SENTRIX_VIDEO_TRANSPORT=webrtc; en ese modo mantiene ofertas y hasta cuatro espectadores.
+### Híbrido (predeterminado): VadCLIP abre y cierra, VideoMAE clasifica
 
-- Se seleccionan frames recibidos 0,4,...,60. La segunda ventana usa
-  64,68,...,124. No se asume un FPS fijo ni se duplican frames.
-- Se preserva el aspecto al redimensionar, se aplica center crop 224×224,
-  RGB, escala /255 y mean/std originales. Entrada float32 NCTHW [1,3,16,224,224].
-- Preparación e inferencia corren en un hilo, fuera del bucle de recepción.
-  Una cola limitada conserva ventanas recientes; `TA2_QUEUE_SIZE` admite 1–4
-  y vale 2 por defecto. La inferencia del modelo compartido está serializada.
-- `TA2_FPS`, `TA2_WIDTH`, `TA2_HEIGHT` y `TA2_WINDOW_SIZE` del simulador no
-  se aplican al modelo real; se usan los metadatos entregados.
-- Regresiones de tiempo, saltos mayores a un segundo y timestamps inválidos
-  reinician la ventana parcial y política. Resultados de la línea temporal
-  anterior no se publican. Los fallos o descartes reinician la confirmación
-  antes de la siguiente ventana exitosa.
-- EN-4: thresholds por clase, confirmación de dos ventanas de la misma clase
-  y cierre tras tres ventanas consecutivas Normal, sin suavizado.
+Igual que el runner de Piero (`run_realtime_hybrid_onnx.py`), comprobado video por video en GPU:
+mismos puntajes (Δ < 1e-6), mismas aperturas y soltadas, mismas clases de VideoMAE.
+
+- **Cada 16 frames** (~0,53 s a 30 fps): el primer frame del bloque pasa por CLIP (vector de 512) y
+  el cabezal VadCLIP calcula el puntaje de anomalía con los últimos 8 vectores (~4,3 s).
+- **Abre** la alerta cuando el puntaje suavizado (2 actualizaciones) llega a 0,85. `alerts.confianza`
+  es ese puntaje y `threshold` 0,85; la clase inicial es la criminal más probable de VideoMAE.
+- **VideoMAE** solo corre con el evento abierto (y durante la espera de unión): al abrir, cada 4
+  bloques (64 frames, los mismos 16 frames de 61 que antes) y al soltar.
+- **Suelta** tras 3 actualizaciones bajo el umbral (~1,6 s). La alerta queda abierta 8 s
+  (`merge_gap`): si VadCLIP se reactiva, es el mismo evento; si no, se cierra con **fin = el momento
+  en que VadCLIP soltó** y la clase final = promedio de logits de VideoMAE dentro del evento. Si en
+  ese promedio gana Normal, se usa la clase criminal más probable (VadCLIP manda).
+- Eventos de más de 120 s se cortan en tramos (se cierra uno y se abre otro).
+- Detecciones: cada clasificación de VideoMAE y, sin evento, una Normal cada 4 bloques
+  (confianza = 1 − puntaje), el mismo ritmo de filas que con VideoMAE solo.
+- `GET /sources/{id}/status` → `latest_result` muestra `anomaly_score`, `vadclip_hint` y en `alert`
+  `incident` (VadCLIP sobre el umbral) y `closing` (esperando la unión).
+- El clip incluye la espera de unión: termina ~8 s + `SENTRIX_CLIP_POST_ROLL` después del fin.
+
+### VideoMAE solo (`SENTRIX_PREDICTOR=videomae`, política EN-4)
+
+- El backend consume el stream RTSP de MediaMTX por TCP y reintenta cada 3 s si se corta. Cada
+  corte se registra una vez como `transport_error`; la recuperación, como `source_connected`.
+- Se toman los frames recibidos 0, 4, …, 60 de cada bloque de 64 (16 frames por ventana). Se
+  preserva el aspecto, se recorta al centro a 224×224 y se normaliza como en el entrenamiento.
+  Entrada float32 NCTHW `[1, 3, 16, 224, 224]`.
+- La inferencia corre en un hilo aparte. La cola descarta la ventana más antigua si se llena.
+- Saltos de más de 1 s, retrocesos o timestamps inválidos reinician la ventana parcial y la política.
 - Cada sesión tiene su propia política, cola y resultados; reconectar limpia el estado.
 
-A 25 FPS, la primera ventana comprende 2.4 s entre sus extremos y la cadencia
-es 2.56 s por ventana. A 30 FPS son 2 s y 2.13 s, antes de sumar recepción y
-procesamiento. La confirmación necesita dos ventanas candidatas de la misma
-clase. Inferencia de ~73 ms no equivale a latencia de detección.
+A 30 fps llega una ventana cada 2,13 s; a 25 fps, cada 2,56 s. Procesar una ventana
+(inferencia y guardado) debe tardar menos que eso para no descartar ventanas.
 
-## POST /predict
+## Persistencia (PostgreSQL)
 
-Se conserva JSON con `timestamp` y frames THWC RGB normalizados en [0,1].
-En modo real exige exactamente 16 frames ya muestreados; dimensiones 1–224,
-con tres canales. Aplica preprocesamiento VideoMAE y devuelve clasificación
-sin política temporal, porque cada petición es independiente.
-422 para entrada inválida, 413 si supera 2 MiB, 503 si falla el modelo.
-Clips completos de 224×224 en JSON normalmente exceden el límite de 2 MiB.
-Para transmisión usar WebRTC, que procesa frames directamente en memoria.
-No enviar píxeles JSON desde el frontend para el stream.
+Todas las tablas viven en la base de `SENTRIX_DATABASE_URL` y se crean al arrancar si no
+existen. Las conexiones se reutilizan entre operaciones; si la base corta una conexión
+inactiva, se abre otra automáticamente. No se guardan frames, clips ni video.
 
-## Validación
+- **EN-3, `detections`:** cada inferencia exitosa, incluida la clase Normal y las que no superan
+  el umbral: `id`, `camera`, `fecha_hora` (UTC), `clase`, `confianza`, `timestamp` (segundos de la
+  línea temporal del video, no fecha), `simulated`, `probabilities`, `session_id` y `window_id`
+  (nulos en `POST /predict`, que devuelve el id en la cabecera `X-Detection-ID`).
+- **EN-4, `alerts`** (con el híbrido, ver arriba: lo abre y cierra VadCLIP): se abre un evento tras dos ventanas consecutivas de la misma clase criminal
+  con confianza ≥ su umbral, y se cierra tras tres ventanas Normal consecutivas. Umbrales
+  provisionales: Hurto .50, Robo .60, Agresión física .60, Vandalismo .55. Guarda detección de
+  apertura y cierre, timestamps, duración y estado `active`/`closed`/`interrupted`.
+  Desconexiones, fallos, ventanas perdidas y reinicios interrumpen el evento sin inventar un regreso
+  a Normal; una alerta interrumpida termina en la última ventana guardada antes del corte, así que
+  también tiene fin y duración. La tabla solo se consulta al abrir o cerrar una alerta.
+- **TA-4, `inference_logs`:** inicio y cierre del servicio, carga del modelo, conexiones de fuentes,
+  errores e inferencias con `processing_ms` e `inference_ms`. Un fallo al guardar logs no detiene
+  la inferencia.
+- **Retención:** con `SENTRIX_RETENTION_DAYS=N` (rol `all` o `api`) se borran cada hora las detecciones
+  Normal que no abren ni cierran una alerta y los logs `inference_completed` con más de N días. Las
+  alertas, sus detecciones y los demás eventos se conservan. Por defecto 7 días; `0` la desactiva.
+
+### Clips de eventos
+
+- **Quién graba:** el proceso que recibe el video (`all` o `worker`). Guarda en memoria los últimos
+  segundos de paquetes H.264 y, al abrirse una alerta, escribe un MP4 **sin recodificar** desde
+  `SENTRIX_CLIP_PRE_ROLL` segundos antes (5 por defecto: la alerta se confirma ~2 ventanas después de
+  que empieza la anomalía) hasta `SENTRIX_CLIP_POST_ROLL` segundos después del cierre (2 por defecto).
+  Tope: `SENTRIX_CLIP_MAX_SECONDS` (300). Un evento interrumpido deja un clip `partial`.
+- **Cortes abruptos:** el MP4 es fragmentado y se escribe al disco en cada paquete. Si el proceso muere,
+  al arrancar repara los `.part` (conserva los fragmentos completos) y sube lo pendiente.
+- **Dónde queda:** en `SENTRIX_CLIPS_DIR` (por defecto `backend/data/clips`) y, si están las variables
+  `SENTRIX_CLIPS_*` de un bucket S3 compatible (Cloudflare R2), se sube como `<cámara>/<alerta>.mp4` y se
+  borra del disco (`SENTRIX_CLIPS_KEEP_LOCAL=1` lo conserva). El estado vive en la tabla `alert_clips`.
+- **Cómo se reproduce:** `GET /alerts/{id}/clip` firma una URL de `SENTRIX_CLIP_URL_SECONDS` (600) para
+  el bucket privado; la API necesita las mismas variables `SENTRIX_CLIPS_*` para firmarla.
+- `SENTRIX_CLIPS=0` desactiva la grabación.
+
+### Migraciones
+
+`backend/migrations/` contiene scripts SQL idempotentes para alinear una base existente con las
+restricciones del código. Ejecutarlos una vez sobre la base de operación, por ejemplo:
+
+```powershell
+.\.venv\Scripts\python.exe -c "import psycopg,pathlib,dotenv; u=dotenv.dotenv_values('backend/.env')['SENTRIX_DATABASE_URL']; c=psycopg.connect(u, autocommit=True); c.execute(pathlib.Path('backend/migrations/2026-10-31_integridad_e_indices.sql').read_text(encoding='utf-8')); print('ok')"
+```
+
+## Pruebas
 
 Desde `backend/`:
 
 ```powershell
+.\test.ps1                 # toda la suite; también: unit, black-box, integration, e2e
 ..\.venv\Scripts\python.exe -m pytest tests -q
-# Prueba adicional con GPU real y video enviado por WebRTC:
-$env:SENTRIX_TEST_GPU = '1'
-$env:SENTRIX_PROVIDER = 'cuda'
-# Opcional: ruta absoluta o relativa al directorio actual:
-$env:SENTRIX_TEST_VIDEO = 'C:/ruta/a/video-de-prueba.mp4'
-..\.venv\Scripts\python.exe -m pytest tests/test_videomae.py::test_gpu_webrtc_end_to_end -q
 ```
 
-La suite normal usa mocks explícitos, prueba compatibilidad WebRTC, muestreo,
-paridad exacta del preprocesamiento con Piero, confirmación/liberación y
-aislamiento de alertas. La prueba GPU exige CUDA, envía el video elegido por WebRTC,
-espera dos ventanas reales y verifica probabilidades, alertas y cierre.
-Es una prueba local; falta repetirla entre computadoras del equipo.
+La suite usa SQLite temporal y un predictor simulado; no lee `backend/.env` ni escribe en la
+base de operación. La prueba marcada `postgres` necesita `SENTRIX_TEST_DATABASE_URL` y trabaja
+en un esquema temporal que borra al terminar.
 
-Las pruebas del emisor directo seleccionan explícitamente transporte=webrtc.
-Prueba adicional del adaptador LiveKit con SDK y GPU real, sin sala remota:
+## Autenticación de usuarios (Clerk)
 
-```powershell
-$env:SENTRIX_TEST_GPU = '1'
-..\.venv\Scripts\python.exe -m pytest tests/test_livekit.py -q
-```
+Clerk guarda contraseñas y sesiones; Neon solo guarda perfil y rol en `users`. La autorización ocurre en FastAPI.
+`SENTRIX_AUTH_MODE` decide cómo entra una solicitud (rol `all` o `api`; los workers siempre usan la clave):
 
-El 3 de octubre de 2026 pasaron 33 pruebas de la suite normal y la prueba
-adicional GPU/WebRTC con `prueba3.mp4` (34 en total). La prueba GPU confirmó
-modelo cargado, CUDA activo, dos ventanas con simulated=false, probabilidades
-válidas, política de alertas y limpieza de la sesión. No se modificaron archivos
-del frontend ni se reinició un servidor que pudiera estar ejecutándose.
+| Modo | Acceso |
+|---|---|
+| `api_key` (por defecto) | Solo `X-API-Key`, sin cambios. |
+| `both` | Transición: `Authorization: Bearer` o `X-API-Key`. La clave nunca entra a `/users` ni `/auth`. |
+| `clerk` | Solo sesión de usuario. |
 
-Después de integrar LiveKit, la suite completa con SENTRIX_TEST_GPU=1 pasó
-48 pruebas. Incluye el adaptador LiveKit con frames nativos e inferencia GPU,
-además de reconexión, selección de emisor y compatibilidad HTTP con Mari.
-La sala de LiveKit se simula en las pruebas: sigue pendiente la conexión real.
+Permisos: `admin` y `operator` consultan, registran y editan cámaras e inician o detienen análisis. Solo `admin`
+elimina o cambia `enabled` de una cámara, usa `POST /predict`, invita y administra usuarios. Una cuenta inactiva recibe 403 aunque su
+token siga vigente; una cuenta creada sin invitación queda inactiva.
 
-## EN-3: persistencia de detecciones
+Puesta en marcha:
 
-Cada inferencia exitosa de HTTP, LiveKit o WebRTC se guarda en SQLite,
-incluyendo clasificaciones Normal y resultados por debajo del umbral de alertas.
-Se guarda el resultado original del modelo antes del suavizado y la política
- temporal. No se escriben frames, clips ni archivos de video.
-
-El archivo predeterminado es `backend/data/detections.sqlite3`, independiente
- del directorio desde el que se arranca el servicio. `SENTRIX_DETECTION_DB` permite
- elegir otra ruta (preferiblemente absoluta). La carpeta se crea automáticamente;
-el proceso necesita permisos de escritura. Conservar este archivo y respaldarlo
-para mantener el historial al reiniciar o trasladar el backend.
-
-- `GET /detections/{id}` recupera un registro; devuelve 404 si no existe.
-- `GET /detections?camera=camara_mari&limit=100&offset=0` consulta el historial
-  más reciente primero. Cámara es opcional; limit admite 1–500, offset >= 0.
-- `POST /predict` acepta `source_id` opcional (por defecto `camara_mari`) y
-  devuelve el identificador persistido en la cabecera `X-Detection-ID`, accesible
-  desde el navegador mediante CORS. Su cuerpo de respuesta conserva el contrato.
-- `latest_result.detection_id` identifica el registro de cada ventana del stream.
-
-Cada registro contiene `id`, `camera` (source_id), `fecha_hora` (instante UTC
- de almacenamiento en ISO 8601), `clase`, `confianza` y `timestamp` (segundos
- de la línea temporal del video, no fecha Unix). También conserva `simulated`,
-`probabilities` cuando el modelo las entrega y `session_id`/`window_id` para
-las ventanas del stream; estos dos últimos son null en peticiones HTTP.
-Las detecciones sobreviven al cierre de la sesión y a la reconexión. Las
-inferencias ya terminadas se conservan incluso si su ventana deja de publicarse
-por un cambio de línea temporal; la política de alertas sigue descartándolas.
-Las ventanas descartadas antes de inferir no generan detecciones.
-
-Una falla de almacenamiento devuelve 503 en HTTP; en el stream se registra
-como error de procesamiento y no publica esa ventana como procesada con éxito.
-No se incluye una cola de reintento durable. Las pruebas usan bases temporales
-para evitar escribir detecciones simuladas en el historial de operación.
-
-## PostgreSQL
-
-Configurar `SENTRIX_DATABASE_URL` en `backend/.env`. Detecciones, alertas y logs
-usan PostgreSQL.
+1. Aplicar `migrations/2026-11-08_usuarios.sql` en la base. El backend no crea esta tabla al arrancar.
+2. En Clerk, usar acceso Invite-only y crear un webhook a `/webhooks/clerk` con `user.created`, `user.updated` y `user.deleted`.
+3. Definir `CLERK_SECRET_KEY`, `CLERK_WEBHOOK_SECRET`, `CLERK_ISSUER`, `CLERK_AUTHORIZED_PARTIES` y `CLERK_INVITATION_REDIRECT_URL`.
+4. Crear la primera cuenta en el Dashboard de Clerk y, desde `backend/`: `python -m app.tools.bootstrap_admin --email persona@dominio.com`.
+5. Cambiar a `both`, publicar el panel que envía el token y luego cambiar a `clerk`.

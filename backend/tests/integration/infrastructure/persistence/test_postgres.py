@@ -44,7 +44,9 @@ def test_postgres_concurrent_schema_and_alert_writes():
                 assert event["status"] == "active"
                 assert store.interrupt(record["session_id"], "source_disconnected") == 1
                 assert store.apply(opening, record) is None
-                assert store.get(event["id"])["status"] == "interrupted"
+                interrupted = store.get(event["id"])
+                assert interrupted["status"] == "interrupted"
+                assert interrupted["timestamp_fin"] == 1 and interrupted["duracion_segundos"] == 0
 
             with ThreadPoolExecutor(max_workers=6) as executor:
                 list(executor.map(open_and_interrupt, records))
@@ -67,5 +69,11 @@ def test_postgres_concurrent_schema_and_alert_writes():
             for batch in batches:
                 for record in batch:
                     assert logs.get(record["id"]) == record
+            # Retención: las 6 detecciones abren alertas y se conservan; los logs de rutina se borran.
+            from datetime import datetime, timedelta, timezone
+            later = datetime.now(timezone.utc) + timedelta(days=2)
+            store.save(dict(clase="Normal", confianza=.9, timestamp=2, simulated=True), "cam", session_id="s0")
+            assert store.purge_detections(later, batch=4) == 1
+            assert logs.purge(later, batch=10) == 24
         finally:
             admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))

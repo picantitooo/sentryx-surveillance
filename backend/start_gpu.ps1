@@ -23,7 +23,7 @@ if ($taskExistingHealth.status -eq 'ok' -and $taskExistingHealth.model_loaded -e
     $global:LASTEXITCODE = 0
     return
 }
-$env:SENTRIX_PREDICTOR = 'videomae'
+# El modelo lo decide SENTRIX_PREDICTOR (backend/.env); por defecto el híbrido VadCLIP + VideoMAE.
 $env:SENTRIX_PROVIDER = 'cuda'
 $env:SENTRIX_VIDEO_TRANSPORT = 'rtsp'
 & $pythonPath (Join-Path $PSScriptRoot 'setup_postgres.py') --ensure-running

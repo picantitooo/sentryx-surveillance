@@ -63,3 +63,10 @@ Get-FileHash modelo/videomae_crime5_continuous.onnx.data -Algorithm SHA256
 El backend utiliza su propia política de eventos confirmados para EN-4;
 la política descrita arriba corresponde al script independiente de inferencia.
 Instalación y ejecución del servicio: [backend/README.md](../backend/README.md).
+
+## VadCLIP (`vadclip/`)
+
+Detector del híbrido VadCLIP + VideoMAE: `clip_visual.onnx` (CLIP ViT-B/16, 512 valores por imagen) y
+`vadclip_head.onnx` (puntaje de anomalía con los últimos 8 vectores). Los `.onnx` no van en git: copiarlos
+del paquete de Piero `sentrix_vadclip_videomae_onnx_v1/models/` (SHA-256 en `vadclip/metadata.json`).
+`metadata.json` fija las entradas, la normalización de CLIP y la política del runner.

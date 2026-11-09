@@ -1,12 +1,15 @@
 """Health, inference and detection HTTP endpoints."""
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.domain.inference import Window, Prediction
+from app.presentation.http.security import require_admin
 
 def inference_router(app, queries, receiver, inference_service, *, real_mode, selected_transport, mock_type):
     router = APIRouter()
     @router.get("/health")
     def health():
-        video_status = {"video_transport": selected_transport}
+        video_status = {"video_transport": selected_transport, "role": getattr(app.state, "role", "all")}
+        if getattr(app.state, "worker_id", None):
+            video_status["worker_id"] = app.state.worker_id
         if selected_transport == "rtsp":
             video_status["rtsp"] = receiver.connection_status()
         if real_mode:
@@ -18,7 +21,8 @@ def inference_router(app, queries, receiver, inference_service, *, real_mode, se
                 "model_loaded": False if isinstance(app.state.predictor, mock_type) else None,
                 **video_status}
 
-    @router.post("/predict", response_model=Prediction, response_model_exclude_none=True)
+    @router.post("/predict", response_model=Prediction, response_model_exclude_none=True,
+                 dependencies=[Depends(require_admin)])
     def predict(window: Window, response: Response):
         prediction, detection_id = inference_service.predict(window)
         response.headers["X-Detection-ID"] = detection_id
