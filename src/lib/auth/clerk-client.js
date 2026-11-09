@@ -1,6 +1,21 @@
 /** @type {Promise<any> | null} */
 let clerkPromise = null;
 
+// Paleta SentriX aplicada a los componentes seguros preconstruidos de Clerk.
+export const sentriXAppearance = {
+  variables: {
+    colorPrimary: '#075dad',
+    colorForeground: '#082957',
+    colorBackground: '#ffffff',
+    colorInputBackground: '#f4f8fc',
+    colorInputText: '#082957',
+    colorDanger: '#b4434e',
+    colorSuccess: '#08705f',
+    borderRadius: '10px',
+    fontFamily: 'Inter, Segoe UI, system-ui, sans-serif'
+  }
+};
+
 /** @param {string} source @param {Record<string, string>} [attributes] */
 function loadScript(source, attributes = {}) {
   return new Promise((resolve, reject) => {
