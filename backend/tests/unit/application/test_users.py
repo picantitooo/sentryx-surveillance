@@ -48,6 +48,35 @@ def test_identity_without_primary_email_is_none():
     assert identity_from_clerk({**clerk_user(), "primary_email_address_id": "otro"}) is None
 
 
+@pytest.mark.parametrize("metadata", ["texto", ["lista"], {"sentrix": "texto"}, {"sentrix": ["lista"]},
+                                      {"sentrix": {"invited": "si", "role": ["admin"], "display_name": 5}}])
+def test_unexpected_metadata_counts_as_not_invited(metadata):
+    identity = identity_from_clerk({**clerk_user(invited=False), "public_metadata": metadata})
+    assert not identity.invited and identity.invited_role == "operator" and identity.display_name == "Nombre"
+
+
+@pytest.mark.parametrize("change", [{"id": 5}, {"id": "  "}, {"email_addresses": "texto"}, {"email_addresses": ["texto"]},
+                                    {"email_addresses": [{"id": "idn_1", "email_address": 5}]}])
+def test_unusable_identity_is_none(change):
+    assert identity_from_clerk({**clerk_user(), **change}) is None
+
+
+def test_malformed_webhook_is_acknowledged_without_failing(parts):
+    store, _, log, service = parts
+    created = {"type": "user.created", "timestamp": 5, "data": {**clerk_user(), "email_addresses": [{"id": "idn_1", "email_address": 5}]}}
+    assert service.handle_webhook(created) == "ignored" and log.events[-1][0] == "user_sync_conflict"
+    assert service.handle_webhook({"type": "user.deleted", "timestamp": 5, "data": {"id": 5}}) == "ignored"
+    assert store.list()["total"] == 0
+
+
+def test_unexpected_metadata_on_first_login_is_forbidden_not_a_failure(parts):
+    store, clerk, _, service = parts
+    clerk.users["user_1"] = {**clerk_user(invited=False), "public_metadata": {"sentrix": "texto"}}
+    with pytest.raises(Forbidden):
+        service.authenticate("user_1")
+    assert store.get_by_clerk_id("user_1")["is_active"] is False
+
+
 def test_active_profile_authenticates(parts):
     store, _, _, service = parts
     profile = store.add("user_1", "a@b.pe", "operator")

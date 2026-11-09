@@ -40,19 +40,29 @@ class ClerkIdentity:
     invited_role: str
 
 
+def _text(value):
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
 def identity_from_clerk(user: dict) -> ClerkIdentity | None:
-    """Traduce un usuario de Clerk; None si no tiene id o correo principal."""
-    clerk_user_id = user.get("id")
+    """Traduce un usuario de Clerk; None si no tiene id o correo principal válidos."""
+    clerk_user_id = _text(user.get("id"))
     primary = user.get("primary_email_address_id")
-    email = next((item.get("email_address") for item in user.get("email_addresses") or []
+    addresses = user.get("email_addresses") if isinstance(user.get("email_addresses"), list) else []
+    email = next((_text(item.get("email_address")) for item in addresses
                   if isinstance(item, dict) and item.get("id") == primary), None)
     if not clerk_user_id or not email:
         return None
-    # La marca de invitación solo la escribe FastAPI: public_metadata no se edita desde el navegador.
-    metadata = (user.get("public_metadata") or {}).get("sentrix") or {}
+    # La marca de invitación solo la escribe FastAPI. Se puede editar a mano en el Dashboard de Clerk:
+    # un formato inesperado cuenta como cuenta sin invitación, no como error.
+    metadata = _mapping(_mapping(user.get("public_metadata")).get("sentrix"))
     role = metadata.get("role")
-    names = " ".join(part for part in (user.get("first_name"), user.get("last_name")) if part)
-    return ClerkIdentity(clerk_user_id=clerk_user_id, email=email.strip().lower(),
-                         display_name=metadata.get("display_name") or names or None,
+    names = " ".join(part for part in (_text(user.get("first_name")), _text(user.get("last_name"))) if part)
+    return ClerkIdentity(clerk_user_id=clerk_user_id, email=email.lower(),
+                         display_name=_text(metadata.get("display_name")) or names or None,
                          invited=metadata.get("invited") is True,
                          invited_role=role if role in USER_ROLES else "operator")

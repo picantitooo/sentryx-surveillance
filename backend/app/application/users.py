@@ -111,7 +111,7 @@ class UserService:
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         event_at = event.get("timestamp") if isinstance(event.get("timestamp"), int) else 0
         if kind == "user.deleted":
-            if not data.get("id"):
+            if not isinstance(data.get("id"), str) or not data["id"]:
                 return "ignored"
             profile = self._storage(self.store.mark_deleted, data["id"], event_at)
             if profile is not None:
