@@ -53,6 +53,12 @@ def test_table_has_no_secrets_and_check_passes(store):
     assert "clerk_user_id" in names and not {name for name in names if "password" in name or "token" in name}
 
 
+def test_missing_table_has_a_clear_message(store):
+    store._run(lambda c: c.execute("DROP TABLE users"))
+    with pytest.raises(RuntimeError, match="usuarios.sql"):
+        store.check()
+
+
 def test_role_check_constraint(store):
     import psycopg
     with pytest.raises(psycopg.errors.CheckViolation):

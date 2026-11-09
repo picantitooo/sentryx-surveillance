@@ -38,7 +38,10 @@ class UserStore:
 
     def check(self):
         """Falla si la migración de usuarios no se aplicó."""
-        self._run(lambda c: c.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+        try:
+            self._run(lambda c: c.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+        except psycopg.errors.UndefinedTable:
+            raise RuntimeError("Falta la tabla users: aplicar backend/migrations/2026-11-08_usuarios.sql") from None
 
     def _one(self, column, value):
         cast = "::uuid" if column == "id" else ""

@@ -193,10 +193,7 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                         connection.close()
             await asyncio.to_thread(initialize_storage)
         if user_service is not None:
-            try:
-                await asyncio.to_thread(user_service.check_storage)
-            except Exception:
-                raise RuntimeError("Falta la tabla users: aplicar backend/migrations/2026-11-08_usuarios.sql") from None
+            await asyncio.to_thread(user_service.check_storage)
         if clips is not None:
             try:
                 recovered = await asyncio.to_thread(clips.recover)

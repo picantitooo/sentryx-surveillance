@@ -265,10 +265,10 @@ def test_invalid_mode_is_rejected(configured, monkeypatch):
         create_app(mode="mock", transport="rtsp")
 
 
-def test_missing_table_stops_the_startup(configured, monkeypatch):
+def test_startup_stops_and_keeps_the_real_cause(configured, monkeypatch):
     app, store, _ = build(monkeypatch, "clerk")
-    store.failure = RuntimeError("relation users does not exist")
-    with pytest.raises(RuntimeError, match="usuarios.sql"):
+    store.failure = ConnectionError("Neon no responde")
+    with pytest.raises(ConnectionError, match="Neon no responde"):
         with TestClient(app):
             pass
 
