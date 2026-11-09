@@ -206,3 +206,26 @@ Desde `backend/`:
 La suite usa SQLite temporal y un predictor simulado; no lee `backend/.env` ni escribe en la
 base de operación. La prueba marcada `postgres` necesita `SENTRIX_TEST_DATABASE_URL` y trabaja
 en un esquema temporal que borra al terminar.
+
+## Autenticación de usuarios (Clerk)
+
+Clerk guarda contraseñas y sesiones; Neon solo guarda perfil y rol en `users`. La autorización ocurre en FastAPI.
+`SENTRIX_AUTH_MODE` decide cómo entra una solicitud (rol `all` o `api`; los workers siempre usan la clave):
+
+| Modo | Acceso |
+|---|---|
+| `api_key` (por defecto) | Solo `X-API-Key`, sin cambios. |
+| `both` | Transición: `Authorization: Bearer` o `X-API-Key`. La clave nunca entra a `/users` ni `/auth`. |
+| `clerk` | Solo sesión de usuario. |
+
+Permisos: `admin` y `operator` consultan, registran y editan cámaras e inician o detienen análisis. Solo `admin`
+elimina o cambia `enabled` de una cámara, usa `POST /predict`, invita y administra usuarios. Una cuenta inactiva recibe 403 aunque su
+token siga vigente; una cuenta creada sin invitación queda inactiva.
+
+Puesta en marcha:
+
+1. Aplicar `migrations/2026-11-08_usuarios.sql` en la base. El backend no crea esta tabla al arrancar.
+2. En Clerk, usar acceso Invite-only y crear un webhook a `/webhooks/clerk` con `user.created`, `user.updated` y `user.deleted`.
+3. Definir `CLERK_SECRET_KEY`, `CLERK_WEBHOOK_SECRET`, `CLERK_ISSUER`, `CLERK_AUTHORIZED_PARTIES` y `CLERK_INVITATION_REDIRECT_URL`.
+4. Crear la primera cuenta en el Dashboard de Clerk y, desde `backend/`: `python -m app.tools.bootstrap_admin --email persona@dominio.com`.
+5. Cambiar a `both`, publicar el panel que envía el token y luego cambiar a `clerk`.
