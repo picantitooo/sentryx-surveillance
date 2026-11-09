@@ -38,8 +38,15 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-ROLES = ("all", "api", "worker")
+ROLES = ("all", "api", "worker", "inference")
 AUTH_MODES = ("api_key", "both", "clerk")
+
+
+def selected_provider():
+    provider = os.getenv("SENTRIX_PROVIDER", "cuda")
+    if provider not in ("cuda", "cpu"):
+        raise ValueError("SENTRIX_PROVIDER debe ser cuda o cpu; no hay fallback automático")
+    return provider
 
 
 def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
@@ -47,9 +54,12 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                role: str | None = None, coordination_store=None, user_service=None):
     # all: un proceso hace todo (comportamiento original). api: sin modelo; atiende al panel y
     # registra qué cámaras deben correr. worker: procesa las cámaras que le asigna la coordinación.
+    # inference: solo los modelos; los procesos con SENTRIX_INFERENCE_URL le envían sus bloques.
     role = role or os.getenv("SENTRIX_ROLE", "all").strip().lower()
     if role not in ROLES:
-        raise ValueError("SENTRIX_ROLE debe ser all, api o worker")
+        raise ValueError("SENTRIX_ROLE debe ser all, api, worker o inference")
+    if role == "inference":
+        return create_inference_app(predictor)
     # api_key: como siempre. both: transición, acepta sesión o clave. clerk: solo sesión de usuario.
     auth_mode = os.getenv("SENTRIX_AUTH_MODE", "api_key").strip().lower()
     if auth_mode not in AUTH_MODES:
@@ -66,8 +76,14 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     # hybrid (predeterminado): VadCLIP abre y cierra la alerta y VideoMAE pone la clase.
     # videomae: solo VideoMAE con la política EN-4 anterior. mock: simulador para pruebas.
     selected_mode = (mode or os.getenv("SENTRIX_PREDICTOR", "hybrid")).strip().lower()
-    real_mode = predictor is None and selected_mode in ("videomae", "hybrid") and role != "api"
-    hybrid = real_mode and selected_mode == "hybrid"
+    uses_model = predictor is None and selected_mode in ("videomae", "hybrid") and role != "api"
+    inference_url = os.getenv("SENTRIX_INFERENCE_URL", "").strip()
+    # remote_mode: los modelos están en el servidor de inferencia; este proceso no los carga.
+    remote_mode = uses_model and bool(inference_url)
+    real_mode = uses_model and not remote_mode
+    hybrid = uses_model and selected_mode == "hybrid"
+    if remote_mode and not hybrid:
+        raise ValueError("SENTRIX_INFERENCE_URL solo funciona con SENTRIX_PREDICTOR=hybrid")
     if predictor is None and selected_mode not in ("hybrid", "videomae", "mock"):
         raise ValueError("SENTRIX_PREDICTOR debe ser hybrid, videomae o mock")
     selected_transport = transport or os.getenv("SENTRIX_VIDEO_TRANSPORT", "rtsp")
@@ -103,7 +119,7 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
         from app.application.hybrid_processing import HybridContext, HybridProcessor
         from app.domain.pipeline import HybridBuffer
         from app.infrastructure.inference.hybrid import config_from_env, load_vadclip_metadata
-        hybrid_config = config_from_env(load_vadclip_metadata())
+        hybrid_config = config_from_env(load_vadclip_metadata(require_files=not remote_mode))
         receiver = receiver_type(predict_window, hybrid_config, buffer_factory=HybridBuffer,
                                  policy_factory=lambda: HybridContext(hybrid_config), **receiver_options)
         receiver.processor = HybridProcessor(lambda: app.state.predictor)
@@ -198,14 +214,19 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                     await asyncio.to_thread(alert_store.interrupt, reason="service_restarted")
                 except Exception:
                     logger.exception("No se pudieron recuperar las alertas pendientes")
+            if remote_mode:
+                from app.infrastructure.inference.remote import RemoteHybridPredictor
+                key = os.getenv("SENTRIX_INFERENCE_API_KEY") or os.getenv("SENTRIX_CONTROL_API_KEY", "")
+                app.state.predictor = RemoteHybridPredictor(inference_url, key)
+                # Sin servidor el worker arranca igual; cada bloque fallido interrumpe la alerta y reintenta.
+                if not (await asyncio.to_thread(app.state.predictor.health))["inference_reachable"]:
+                    logger.warning("Servidor de inferencia no disponible todavía")
             if real_mode:
                 started = time.perf_counter()
                 await asyncio.to_thread(log_store.emit, "model_loading",
                                     "Iniciando carga de VadCLIP + VideoMAE" if hybrid else "Iniciando carga de VideoMAE")
                 try:
-                    provider = os.getenv("SENTRIX_PROVIDER", "cuda")
-                    if provider not in ("cuda", "cpu"):
-                        raise ValueError("SENTRIX_PROVIDER debe ser cuda o cpu; no hay fallback automático")
+                    provider = selected_provider()
                     if hybrid:
                         from app.infrastructure.inference.hybrid import HybridPredictor
                         logger.info("Cargando VadCLIP + VideoMAE (%s); esperar antes de conectar la fuente", provider)
@@ -248,7 +269,9 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 # Espera a que terminen las subidas en curso; lo que falte se retoma al reiniciar.
                 await asyncio.to_thread(clips.shutdown)
             await asyncio.to_thread(log_store.emit, "service_stopped", "Servicio de inferencia detenido")
-            if real_mode:
+            if remote_mode and app.state.predictor is not None:
+                app.state.predictor.close()
+            if uses_model:
                 app.state.predictor = None
     app = FastAPI(title="SentriX · Servicio de inferencia", version="0.6.0", lifespan=lifespan,
                   description="VideoMAE CUDA; recepción RTSP/RTSPS o WebRTC y consulta de resultados HTTP.")
@@ -292,12 +315,41 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     app.state.alert_store = alert_store
     # La API no infiere: /predict responde 503 en lugar de usar el simulador.
     app.state.predictor = predictor if predictor is not None else (
-        None if real_mode or role == "api" else MockPredictor())
+        None if uses_model or role == "api" else MockPredictor())
 
-    inference_service = InferenceService(lambda: app.state.predictor, store, log_store, real_mode=real_mode)
+    inference_service = InferenceService(lambda: app.state.predictor, store, log_store, real_mode=uses_model)
     detection_queries = RecordQueries(store, unavailable="Almacenamiento de detecciones no disponible",
                                       missing="Detección no encontrada")
     app.include_router(inference_router(app, detection_queries, sources or receiver, inference_service,
-                       real_mode=real_mode, selected_transport=selected_transport, mock_type=MockPredictor))
+                       real_mode=uses_model, selected_transport=selected_transport, mock_type=MockPredictor))
     document_api_key(app, auth_mode)
+    return app
+
+
+def create_inference_app(predictor: Predictor | None = None):
+    """Servidor de inferencia compartido: CLIP, VadCLIP y VideoMAE una sola vez, sin base de datos ni cámaras."""
+    from app.presentation.http.inference_server import inference_server_router
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if predictor is None:
+            from app.infrastructure.inference.hybrid import HybridPredictor
+            provider = selected_provider()
+            logger.info("Cargando VadCLIP + VideoMAE (%s) para el servidor de inferencia", provider)
+            app.state.predictor = await asyncio.to_thread(HybridPredictor, provider=provider)
+            logger.info("Modelo listo: %s", app.state.predictor.health())
+        try:
+            yield
+        finally:
+            app.state.predictor = None
+
+    app = FastAPI(title="SentriX · Servidor de inferencia compartido", version="0.7.0", lifespan=lifespan,
+                  description="Recibe bloques recortados por los workers y ejecuta los modelos en la GPU.")
+    # Un clip uint8 de 16×224×224×3 ocupa 2,4 MB: más que el límite de la API pública.
+    app.add_middleware(BodyLimit, limit=8 * 1024 * 1024)
+    app.add_middleware(ApiKeyGuard)  # Lo llaman los workers, nunca una persona: siempre con clave.
+    app.state.predictor = predictor
+    app.state.role = "inference"
+    app.include_router(inference_server_router(app))
+    document_api_key(app)
     return app

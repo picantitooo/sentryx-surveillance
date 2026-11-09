@@ -25,7 +25,8 @@ def vadclip_root():
     return Path(os.getenv("SENTRIX_VADCLIP_ROOT") or MODEL_ROOT / "vadclip")
 
 
-def load_vadclip_metadata(root=None):
+def load_vadclip_metadata(root=None, require_files=True):
+    # Un worker con servidor de inferencia solo necesita la política: no exige los pesos.
     root = Path(root or vadclip_root())
     metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
     clip, head = metadata["clip"], metadata["head"]
@@ -36,7 +37,7 @@ def load_vadclip_metadata(root=None):
     if len(clip["mean"]) != 3 or len(clip["std"]) != 3 or min(clip["std"]) <= 0:
         raise ValueError("Normalización de CLIP inválida")
     for name in (clip["onnx_file"], head["onnx_file"]):
-        if Path(name).name != name or not (root / name).is_file():
+        if Path(name).name != name or (require_files and not (root / name).is_file()):
             raise FileNotFoundError(f"Falta el modelo {name} en {root}")
     return metadata
 
@@ -136,6 +137,11 @@ class HybridPredictor:
         hints /= hints.sum()
         hint = int(np.argmax(hints[1:])) + 1
         return score, VADCLIP_CLASSES[hint], float(hints[hint])
+
+    def detect(self, image, previous, rolling):
+        """Vector del bloque y puntaje con los últimos `rolling` vectores, incluido el nuevo."""
+        feature = self.feature(image)
+        return feature, self.anomaly((list(previous) + [feature])[-rolling:])
 
     def classify(self, frames):
         """16 frames RGB 224×224 uint8 → 5 logits de VideoMAE."""

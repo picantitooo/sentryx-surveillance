@@ -53,7 +53,8 @@ Para usar CPU de forma deliberada, `SENTRIX_PROVIDER=cpu`. Para pruebas sin mode
 |---|---|
 | `all` (predeterminado) | Un solo proceso hace todo, como antes. |
 | `api` | Atiende al panel. No carga el modelo: `POST /sources/start` registra que la cámara debe correr y `GET /sources/{id}/status` muestra lo que publica el worker dueño. |
-| `worker` | Carga el modelo y procesa cámaras. Cada cámara la procesa un solo worker (lease en la base). |
+| `worker` | Procesa cámaras y carga el modelo, salvo que use un servidor de inferencia. Cada cámara la procesa un solo worker (lease en la base). |
+| `inference` | Solo los modelos (CLIP, cabezal VadCLIP y VideoMAE) en la GPU. Sin base de datos ni cámaras. |
 
 Cada worker renueva sus cámaras cada `SENTRIX_COORDINATION_INTERVAL` s (2) y toma como máximo una
 cámara libre por ciclo, solo si es de los menos cargados, hasta `SENTRIX_WORKER_CAPACITY` (2). Si un
@@ -71,6 +72,18 @@ $env:SENTRIX_ROLE = 'worker'; .\.venv\Scripts\python.exe backend/run_server.py -
 
 El panel apunta solo a la API (puerto 8000). `GET /health` de la API lista los workers vivos y sus cámaras.
 
+### Servidor de inferencia compartido
+
+Con varios workers en una sola GPU, cada uno cargaría su copia de los modelos y llenaría la VRAM. Para
+compartirlos, arrancar el servidor con `.\backend\start_inference.ps1` (puerto 8099; `-BindHost` con la IP
+de Tailscale para workers en otras máquinas) y poner en cada worker
+`SENTRIX_INFERENCE_URL=http://<host>:8099`. Solo funciona con `SENTRIX_PREDICTOR=hybrid` y el worker no
+necesita los pesos ni GPU, pero sí `modelo/vadclip/metadata.json`.
+
+El worker guarda el estado de cada cámara y recorta en CPU; el servidor no guarda nada por cámara y atiende
+`POST /infer/detect` y `POST /infer/classify` con `X-API-Key`. Si se cae, cada bloque fallido interrumpe la
+alerta (`processing_error`), el worker sigue vivo y retoma solo cuando el servidor vuelve.
+
 ## Configuración (`backend/.env`)
 
 | Variable | Uso |
@@ -85,7 +98,9 @@ El panel apunta solo a la API (puerto 8000). `GET /health` de la API lista los w
 | `SENTRIX_ALERT_THRESHOLDS` | JSON con los umbrales de las cuatro clases (ver EN-4). |
 | `TA2_QUEUE_SIZE` | Ventanas en cola por sesión, de 1 a 4 (predeterminado 2). |
 | `FRONTEND_ORIGINS` | Orígenes CORS permitidos, separados por comas. |
-| `SENTRIX_ROLE` | `all`, `api` o `worker` (ver Escalamiento horizontal). |
+| `SENTRIX_ROLE` | `all`, `api`, `worker` o `inference` (ver Escalamiento horizontal). |
+| `SENTRIX_INFERENCE_URL`, `SENTRIX_INFERENCE_API_KEY` | Servidor de inferencia compartido y su clave (por defecto `SENTRIX_CONTROL_API_KEY`). Vacío: cada worker carga los modelos. |
+| `SENTRIX_MODEL_ROOT` | Carpeta del modelo VideoMAE (por defecto `modelo`). |
 | `SENTRIX_WORKER_CAPACITY`, `SENTRIX_LEASE_TTL`, `SENTRIX_COORDINATION_INTERVAL`, `SENTRIX_WORKER_ID` | Ajustes de los workers (2 cámaras, 15 s, 2 s, id automático). |
 | `SENTRIX_DETECTION_DB`, `SENTRIX_LOG_DB` | Solo sin `SENTRIX_DATABASE_URL`: archivos SQLite para pruebas locales. |
 

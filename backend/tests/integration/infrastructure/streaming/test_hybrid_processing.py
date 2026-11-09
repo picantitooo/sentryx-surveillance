@@ -24,6 +24,10 @@ class FakeModels:
     def anomaly(features):
         return features[-1], "Assault", .9
 
+    def detect(self, image, previous, rolling):
+        feature = self.feature(image)
+        return feature, self.anomaly((list(previous) + [feature])[-rolling:])
+
     def classify(self, frames):
         assert len(frames) == 16
         self.classified += 1

@@ -70,8 +70,8 @@ class HybridProcessor:
 
                 def detect():
                     image, frames = models.prepare_block(block)
-                    feature = models.feature(image)
-                    return feature, frames, models.anomaly((features + [feature])[-context.config.rolling_features:])
+                    feature, result = models.detect(image, features, context.config.rolling_features)
+                    return feature, frames, result
                 feature, frames, (score, hint, hint_probability) = await asyncio.to_thread(detect)
                 context.features.append(feature)
                 context.blocks.append(frames)
