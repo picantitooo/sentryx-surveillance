@@ -8,9 +8,9 @@ export function createAlertService({ inferenceClient }) {
   return {
     /** @param {{ camera?: string | null, status?: string | null, limit?: number, offset?: number }} filters */
     async list({ camera, status, limit = 100, offset = 0 } = {}) {
-      const query = new URLSearchParams({ limit: String(Math.min(Math.max(limit, 1), 500)), offset: String(Math.max(offset, 0)) });
-      if (camera) query.set('camera', camera);
-      if (status) query.set('status', status);
+      const query = new URLSearchParams({ limit: String(boundedInteger(limit, 100, 1, 500)), offset: String(boundedInteger(offset, 0, 0, Number.MAX_SAFE_INTEGER)) });
+      if (typeof camera === 'string' && camera.trim()) query.set('camera', camera.trim().slice(0, 100));
+      if (typeof status === 'string' && status.trim()) query.set('status', status.trim().slice(0, 32));
       return inferenceClient(`/alerts?${query}`);
     },
     /** @param {string} id */
@@ -18,4 +18,12 @@ export function createAlertService({ inferenceClient }) {
     /** @param {string} id */
     getClip(id) { return inferenceClient(`/alerts/${encodeURIComponent(id)}/clip`); }
   };
+}
+
+/** Evita que parámetros externos como NaN, Infinity o decimales lleguen al backend. */
+/** @param {unknown} value @param {number} fallback @param {number} minimum @param {number} maximum */
+function boundedInteger(value, fallback, minimum, maximum) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(Math.trunc(number), minimum), maximum);
 }
