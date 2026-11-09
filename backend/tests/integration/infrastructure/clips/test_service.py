@@ -100,3 +100,29 @@ def test_event_without_video_is_missing(tmp_path):
     clips._closed(ClipResult("a5", "camara1", None, False, "no_video"))
     clips.shutdown()
     assert clips.store.get("a5")["status"] == "missing"
+
+
+@pytest.mark.parametrize("name", ["a6.mp4", "a6.mp4.part"])
+def test_empty_clip_is_missing_and_leaves_nothing_on_disk(tmp_path, name):
+    storage = FakeStorage()
+    clips = service(tmp_path, storage)
+    clips.begin("a6", "camara1")
+    (tmp_path / "clips").mkdir()
+    path = tmp_path / "clips" / name
+    path.touch()
+    clips._closed(ClipResult("a6", "camara1", str(path), True, "closed"))
+    clips.shutdown()
+    assert clips.store.get("a6")["status"] == "missing"
+    assert storage.uploaded == {} and not path.exists()
+
+
+def test_empty_clip_found_after_restart_is_missing(tmp_path):
+    clips = service(tmp_path, FakeStorage())
+    clips.begin("a7", "camara1")
+    (tmp_path / "clips").mkdir()
+    path = tmp_path / "clips" / "a7.mp4"
+    path.touch()
+    restarted = service(tmp_path, FakeStorage())
+    assert restarted.recover() == 1
+    restarted.shutdown()
+    assert restarted.store.get("a7")["status"] == "missing" and not path.exists()

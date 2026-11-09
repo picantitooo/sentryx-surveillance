@@ -80,6 +80,11 @@ class ClipService:
             if path is None or not os.path.exists(path):
                 self.store.update(alert_id, "missing", reason=reason, local_path=None)
                 return
+            if os.path.getsize(path) == 0:
+                # No se escribió ningún paquete: no hay video que guardar ni subida que reintentar.
+                os.remove(path)
+                self.store.update(alert_id, "missing", reason=reason, local_path=None)
+                return
             if path.endswith(".part"):
                 final = path[: -len(".part")]
                 if not repair(path, final):
