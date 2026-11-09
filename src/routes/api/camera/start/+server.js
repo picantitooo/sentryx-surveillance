@@ -1,8 +1,9 @@
 import { json } from '@sveltejs/kit';
 import { CameraNotFoundError } from '#application/cameras/camera-service.js';
-import { cameraService } from '#presentation/server/server-services.js';
+import { createServerServices } from '#presentation/server/server-services.js';
 
 export async function POST({ request }) {
+  const { cameraService } = createServerServices(request.headers.get('authorization'));
   const body = await request.json().catch(() => ({}));
   try {
     return json({ source: await cameraService.start(body.id) });

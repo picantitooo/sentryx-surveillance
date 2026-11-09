@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
-import { serviceLogService } from '#presentation/server/server-services.js';
+import { createServerServices } from '#presentation/server/server-services.js';
 
-export async function GET({ url }) {
+export async function GET({ url, request }) {
+  const { serviceLogService } = createServerServices(request.headers.get('authorization'));
   const camera = url.searchParams.get('camera')?.trim();
   const level = url.searchParams.get('level')?.trim();
   const eventType = url.searchParams.get('event_type')?.trim();

@@ -3,21 +3,21 @@ import { INFERENCE_API_URL, INFERENCE_API_KEY } from '$app/env/private';
 
 /**
  * @param {string} path
- * @param {{ method?: string, body?: unknown, timeoutMs?: number, retryOnTimeout?: boolean }} [options]
+ * @param {{ method?: string, body?: unknown, timeoutMs?: number, retryOnTimeout?: boolean, authorization?: string | null }} [options]
  * @returns {Promise<any>}
  */
-export async function callInference(path, { method = 'GET', body, timeoutMs = 10_000, retryOnTimeout = true } = {}) {
+export async function callInference(path, { method = 'GET', body, timeoutMs = 10_000, retryOnTimeout = true, authorization = null } = {}) {
   const base = INFERENCE_API_URL?.replace(/\/$/, '');
   const key = INFERENCE_API_KEY;
-  if (!base || !key) {
-    throw new Error('Configura INFERENCE_API_URL e INFERENCE_API_KEY en .env');
+  if (!base || (!authorization && !key)) {
+    throw new Error('Configura INFERENCE_API_URL y una sesión Clerk o INFERENCE_API_KEY en .env');
   }
   /** @param {number} timeout */
   const request = async (timeout) => {
     const response = await fetch(`${base}${path}`, {
       method,
       headers: {
-        'X-API-Key': key,
+        ...(authorization ? { Authorization: authorization } : { 'X-API-Key': key }),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

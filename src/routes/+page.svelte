@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { getClerk, getSessionToken, signOutAndRedirect } from '../lib/auth/clerk-client.js';
   import AlertsView from '../lib/presentation/components/alerts/AlertsView.svelte';
   import AlertDetailDialog from '../lib/presentation/components/alerts/AlertDetailDialog.svelte';
   import {
@@ -27,6 +28,7 @@
   interface DeleteCameraResponse { warning?: string | null; }
   interface ServiceLogsResponse { logs?: ServiceLog[]; total?: number; }
   interface ErrorPayload { error?: string; }
+  interface AuthProfile { id: string; clerk_user_id: string; email: string; display_name?: string | null; role: 'admin' | 'operator'; is_active: boolean; }
 
   const DEFAULT_URL = '';
   // Historiales por sesión: evita consultas repetidas al cambiar de vista.
@@ -58,6 +60,8 @@
   let name = $state('Logitech C922');
   let url = $state(DEFAULT_URL);
   let formError = $state('');
+  let authProfile = $state<AuthProfile | null>(null);
+  let authBlocked = $state('');
   let showPlayer = $state(true);
   let monitorExpanded = $state(false);
   let monitorPage = $state(1);
@@ -115,6 +119,7 @@
   let aiReceiving = $derived(aiConnected && isSourceReceiving(source));
   let sourceAvailable = $derived(aiConnected && hasVideoSignal(source));
   let selectedPlaybackReady = $derived(camera ? playbackReadyByCamera[camera.id] === true : false);
+  let isAdmin = $derived(authProfile?.role === 'admin');
   let filteredDetections = $derived(detectionResults.filter((d) => {
     const cls = (d.clase ?? d.class_name ?? '').toLowerCase();
     const date = d.fecha_hora ?? d.created_at ?? '';
@@ -222,8 +227,15 @@
     return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Lima', hour: '2-digit', hourCycle: 'h23' }).format(date));
   }
   async function getJSON<T>(path: string, options?: RequestInit): Promise<T> {
-    const response = await fetch(path, options);
+    const headers = new Headers(options?.headers);
+    const token = await getSessionToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const response = await fetch(path, { ...options, headers });
     const data = await response.json().catch(() => ({})) as T & ErrorPayload;
+    if (response.status === 401) {
+      window.location.assign('/sign-in');
+      throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
+    }
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     return data;
   }
@@ -390,13 +402,21 @@
       letterSpacing = saved.letterSpacing === true || saved.lineSpacing === true;
       alignedText = saved.alignedText === true;
     } catch { /* Las preferencias son opcionales. */ }
-    loadCamera().then(() => {
+    const boot = async () => {
+      const clerk = await getClerk();
+      if (clerk && !clerk.user) { window.location.replace('/sign-in'); return; }
+      if (clerk) {
+        try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
+        catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
+      }
+      await loadCamera();
       if (!mounted) return;
       refreshAllInference();
       loadDashboardAnalytics();
       if (view === 'service') refreshServiceLogs();
       if (view === 'detections') refreshDetections();
-    });
+    };
+    void boot();
     const timer = setInterval(async () => {
       if (!mounted || !cameras.length || fetching) return;
       fetching = true;
@@ -444,7 +464,9 @@
         cameras = [...cameras, data.camera];
         clearOperationalCache();
         selectedId = data.camera.id;
-        notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
+        notice = isAdmin
+          ? (data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.')
+          : 'Cámara registrada. Un administrador puede activar el análisis cuando corresponda.';
         if (data.inference?.error) error = data.inference.error;
       }
       modal = false; view = 'cameras'; showPlayer = true;
@@ -455,6 +477,7 @@
     finally { busy = false; }
   }
   async function activateInference(target: Camera | null = camera) {
+    if (!isAdmin) { error = 'No tienes permisos para activar o detener cámaras.'; return; }
     if (!target) return;
     selectedId = target.id;
     clearFeedback(); busy = true;
@@ -466,6 +489,7 @@
     finally { busy = false; }
   }
   async function deleteCamera(target: Camera) {
+    if (!isAdmin) { error = 'No tienes permisos para eliminar cámaras.'; return; }
     if (!confirm(`¿Detener el análisis y eliminar ${target.id}?`)) return;
     clearFeedback(); busy = true;
     try {
@@ -629,7 +653,7 @@
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">OPERACIONES <span>/</span> <strong>{menu.find((m) => m.id === view)?.label}</strong></div>
-      <div class="topbar-right"><button class="accessibility-trigger" type="button" aria-expanded={accessibilityOpen} aria-controls="accessibility-panel" onclick={() => accessibilityOpen = !accessibilityOpen}><span class="accessibility-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle class="person-head" cx="24" cy="13" r="3.4"/><path d="M13 20.5c4.5 2.6 17.5 2.6 22 0M24 17v12m0 0-8 9m8-9 8 9"/></svg></span><span>Accesibilidad</span></button><span class="avatar" aria-label="Operador">OP</span><span class="operator">Operador</span></div>
+      <div class="topbar-right"><button class="accessibility-trigger" type="button" aria-expanded={accessibilityOpen} aria-controls="accessibility-panel" onclick={() => accessibilityOpen = !accessibilityOpen}><span class="accessibility-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle class="person-head" cx="24" cy="13" r="3.4"/><path d="M13 20.5c4.5 2.6 17.5 2.6 22 0M24 17v12m0 0-8 9m8-9 8 9"/></svg></span><span>Accesibilidad</span></button>{#if isAdmin}<a class="user-admin-link" href="/users">Usuarios</a>{/if}<span class="avatar" aria-label={authProfile?.display_name ?? 'Usuario'}>{authProfile?.display_name?.slice(0, 2).toUpperCase() ?? 'OP'}</span><span class="operator">{authProfile?.display_name ?? 'Operador'}{authProfile ? ` · ${authProfile.role === 'admin' ? 'Administrador' : 'Operador'}` : ''}</span><button class="sign-out" type="button" onclick={signOutAndRedirect}>Salir</button></div>
     </header>
     {#if accessibilityOpen}
       <aside id="accessibility-panel" class="accessibility-panel" aria-label="Menú de accesibilidad">
@@ -727,7 +751,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button>{#if isAdmin}<button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button>{/if}</div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -769,7 +793,7 @@
             <div class="monitor-aside">
               <section class="surface"><div class="section-title"><div><h2>Estado del análisis</h2></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
                 <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Estado del incidente</span><strong class:positive={liveIncident} class:offline={!liveIncident && !liveClosing} class:waiting={liveClosing}><i></i>{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</strong></div><div><span>Puntaje de anomalía VadCLIP</span><strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
-                <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar análisis'}</button>
+                {#if isAdmin}<button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar análisis'}</button>{/if}
               </section>
               <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
                 {#if liveIncident && latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence"><span>Confianza VideoMAE <strong>{confidence(latest.confianza)}</strong></span><span>Anomalía VadCLIP <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></span></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
@@ -872,7 +896,7 @@
   .workspace{flex:1;min-width:0;display:flex;flex-direction:column}
   .topbar{height:76px;padding:0 44px;background:white;border-bottom:1px solid #e6ebf2;display:flex;align-items:center;justify-content:space-between;gap:14px}
   .breadcrumb{color:#8392a6;letter-spacing:1.1px;font-size:10px;font-weight:750}.breadcrumb span{margin:0 11px;color:#c9d2df}.breadcrumb strong{color:#2f455f;letter-spacing:0;font-size:12px;font-weight:600}
-  .topbar-right{display:flex;align-items:center;gap:12px}.avatar{width:33px;height:33px;border-radius:50%;background:#d9e6f4;color:#2b5279;display:grid;place-items:center;font-size:11px;font-weight:800}.operator{font-size:12px;color:#506780}
+  .topbar-right{display:flex;align-items:center;gap:12px}.avatar{width:33px;height:33px;border-radius:50%;background:#d9e6f4;color:#2b5279;display:grid;place-items:center;font-size:11px;font-weight:800}.operator{font-size:12px;color:#506780}.user-admin-link,.sign-out{border:1px solid #d4e1ec;border-radius:7px;background:#fff;color:#245c8c;padding:7px 9px;font-size:11px;font-weight:750;text-decoration:none}.sign-out{cursor:pointer}.user-admin-link:hover,.sign-out:hover{background:#eef6fc}
   main{max-width:1390px;width:100%;margin:0 auto;padding:46px 48px 68px;flex:1}
   .page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:27px}.eyebrow{color:#6991ae;font-weight:800;letter-spacing:1.5px;font-size:10px}.page-head h1{margin:10px 0 7px;font-size:31px;letter-spacing:-.8px;line-height:1.2;font-weight:750}.subtitle{color:#7c8da2;margin:0;line-height:1.6;font-size:13px}
   .btn{border-radius:7px;padding:10px 15px;border:1px solid transparent;font-weight:650;font-size:12px;white-space:nowrap;transition:background .15s}.btn.primary{background:#1557a1;color:#fff}.btn.primary:hover{background:#0d447f}.btn.secondary{border-color:#d3deea;color:#2c4a6a;background:#fff}.btn.secondary:hover{background:#f1f6fa}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.full{width:100%;margin-top:17px}

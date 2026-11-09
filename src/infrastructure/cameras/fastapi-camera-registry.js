@@ -52,39 +52,40 @@ export function mapCamera(row) {
   };
 }
 
-/** @param {{ includeDisabled?: boolean }} [options] */
-export async function getRegisteredCameras({ includeDisabled = false } = {}) {
-  const cameras = /** @type {Camera[]} */ (cameraRows(await callInference('/cameras')).map(mapCamera));
+/** @param {{ includeDisabled?: boolean, inferenceClient?: typeof callInference }} [options] */
+export async function getRegisteredCameras({ includeDisabled = false, inferenceClient = callInference } = {}) {
+  const cameras = /** @type {Camera[]} */ (cameraRows(await inferenceClient('/cameras')).map(mapCamera));
   return cameras.filter((camera) => camera.id && (includeDisabled || camera.enabled));
 }
 
-/** @param {unknown} id */
-export async function getRegisteredCamera(id) {
+/** @param {unknown} id @param {{ inferenceClient?: typeof callInference }} [options] */
+export async function getRegisteredCamera(id, { inferenceClient = callInference } = {}) {
   const wanted = String(id ?? '').trim();
   if (!wanted) return null;
-  return (await getRegisteredCameras()).find((camera) => camera.id === wanted) ?? null;
+  return (await getRegisteredCameras({ inferenceClient })).find((camera) => camera.id === wanted) ?? null;
 }
 
 /**
  * Registra la cámara en FastAPI/Neon con el contrato vigente: source_id obligatorio.
  * @param {{ id: string, name: string, streamPath: string }} camera
+ * @param {{ inferenceClient?: typeof callInference }} [options]
  */
-export async function registerCamera(camera) {
-  const payload = await callInference('/cameras', {
+export async function registerCamera(camera, { inferenceClient = callInference } = {}) {
+  const payload = await inferenceClient('/cameras', {
     method: 'POST', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
   });
   return mapCamera(payload?.camera ?? payload);
 }
 
-/** @param {{ id: string, name: string, streamPath: string }} camera */
-export async function updateRegisteredCamera(camera) {
-  const payload = await callInference(`/cameras/${encodeURIComponent(camera.id)}`, {
+/** @param {{ id: string, name: string, streamPath: string }} camera @param {{ inferenceClient?: typeof callInference }} [options] */
+export async function updateRegisteredCamera(camera, { inferenceClient = callInference } = {}) {
+  const payload = await inferenceClient(`/cameras/${encodeURIComponent(camera.id)}`, {
     method: 'PUT', body: { source_id: camera.id, name: camera.name, stream_path: camera.streamPath }
   });
   return mapCamera(payload?.camera ?? payload);
 }
 
-/** @param {string} id */
-export async function removeRegisteredCamera(id) {
-  return callInference(`/cameras/${encodeURIComponent(id)}`, { method: 'DELETE' });
+/** @param {string} id @param {{ inferenceClient?: typeof callInference }} [options] */
+export async function removeRegisteredCamera(id, { inferenceClient = callInference } = {}) {
+  return inferenceClient(`/cameras/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

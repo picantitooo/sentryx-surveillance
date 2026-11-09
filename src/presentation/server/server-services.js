@@ -12,16 +12,26 @@ import {
   removeRegisteredCamera
 } from '#infrastructure/cameras/fastapi-camera-registry.js';
 
-const cameraRegistry = {
-  list: async () => getRegisteredCameras(),
-  get: async (/** @type {unknown} */ id) => getRegisteredCamera(typeof id === 'string' ? id : null),
-  register: registerCamera,
-  update: updateRegisteredCamera,
-  remove: removeRegisteredCamera
-};
-
-export const cameraService = createCameraService({ inferenceClient: callInference, cameraRegistry });
-export const monitoringService = createMonitoringService({ inferenceClient: callInference, cameraRegistry });
-export const serviceLogService = createServiceLogService({ inferenceClient: callInference });
-export const alertService = createAlertService({ inferenceClient: callInference });
-export const detectionService = createDetectionService({ inferenceClient: callInference });
+/**
+ * Los servicios se crean por solicitud para que el JWT de un operador nunca
+ * pueda filtrarse hacia otra solicitud concurrente del panel.
+ * @param {string | null} authorization
+ */
+export function createServerServices(authorization = null) {
+  /** @param {string} path @param {Parameters<typeof callInference>[1]} [options] */
+  const inferenceClient = (path, options = {}) => callInference(path, { ...options, authorization });
+  const cameraRegistry = {
+    list: async () => getRegisteredCameras({ inferenceClient }),
+    get: async (/** @type {unknown} */ id) => getRegisteredCamera(typeof id === 'string' ? id : null, { inferenceClient }),
+    register: (/** @type {{ id: string, name: string, streamPath: string }} */ camera) => registerCamera(camera, { inferenceClient }),
+    update: (/** @type {{ id: string, name: string, streamPath: string }} */ camera) => updateRegisteredCamera(camera, { inferenceClient }),
+    remove: (/** @type {string} */ id) => removeRegisteredCamera(id, { inferenceClient })
+  };
+  return {
+    cameraService: createCameraService({ inferenceClient, cameraRegistry }),
+    monitoringService: createMonitoringService({ inferenceClient, cameraRegistry }),
+    serviceLogService: createServiceLogService({ inferenceClient }),
+    alertService: createAlertService({ inferenceClient }),
+    detectionService: createDetectionService({ inferenceClient })
+  };
+}
