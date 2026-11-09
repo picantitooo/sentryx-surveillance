@@ -26,11 +26,11 @@ function clerkDomain(publishableKey) {
  */
 export async function getClerk() {
   if (typeof window === 'undefined') return null;
-  const response = await fetch('/api/auth/config');
-  const { publishableKey = '' } = response.ok ? await response.json() : {};
-  if (!publishableKey) return null;
   if (!clerkPromise) {
     clerkPromise = (async () => {
+      const response = await fetch('/api/auth/config');
+      const { publishableKey = '' } = response.ok ? await response.json() : {};
+      if (!publishableKey) return null;
       const domain = clerkDomain(publishableKey);
       await loadScript(`https://${domain}/npm/@clerk/ui@1/dist/ui.browser.js`);
       await loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': publishableKey });

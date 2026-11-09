@@ -18,8 +18,7 @@
       return;
     }
     clerk.mountSignIn(host, {
-      routing: 'path',
-      path: '/sign-in',
+      routing: 'hash',
       withSignUp: false,
       forceRedirectUrl: '/'
     });

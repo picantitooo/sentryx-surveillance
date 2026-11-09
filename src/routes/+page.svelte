@@ -465,9 +465,7 @@
         cameras = [...cameras, data.camera];
         clearOperationalCache();
         selectedId = data.camera.id;
-        notice = isAdmin
-          ? (data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.')
-          : 'Cámara registrada. Un administrador puede activar el análisis cuando corresponda.';
+        notice = data.inference?.available ? 'Cámara registrada. Se solicitó el inicio del análisis.' : 'Cámara registrada. La inferencia no respondió; puedes reintentarla.';
         if (data.inference?.error) error = data.inference.error;
       }
       modal = false; view = 'cameras'; showPlayer = true;
@@ -478,7 +476,6 @@
     finally { busy = false; }
   }
   async function activateInference(target: Camera | null = camera) {
-    if (!isAdmin) { error = 'No tienes permisos para activar o detener cámaras.'; return; }
     if (!target) return;
     selectedId = target.id;
     clearFeedback(); busy = true;
@@ -757,7 +754,7 @@
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
             <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button>{#if isAdmin}<button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button>{/if}</div></td></tr>{/each}</tbody>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button>{#if isAdmin}<button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button>{/if}</div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -799,7 +796,7 @@
             <div class="monitor-aside">
               <section class="surface"><div class="section-title"><div><h2>Estado del análisis</h2></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
                 <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Estado del incidente</span><strong class:positive={liveIncident} class:offline={!liveIncident && !liveClosing} class:waiting={liveClosing}><i></i>{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</strong></div><div><span>Puntaje de anomalía VadCLIP</span><strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
-                {#if isAdmin}<button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar análisis'}</button>{/if}
+                <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar análisis'}</button>
               </section>
               <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
                 {#if liveIncident && latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence"><span>Confianza VideoMAE <strong>{confidence(latest.confianza)}</strong></span><span>Anomalía VadCLIP <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></span></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>

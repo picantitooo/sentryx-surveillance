@@ -13,8 +13,7 @@
     clerk = await getClerk();
     if (!clerk) { error = 'Falta configurar PUBLIC_CLERK_PUBLISHABLE_KEY para aceptar invitaciones.'; return; }
     clerk.mountSignUp(host, {
-      routing: 'path',
-      path: '/accept-invitation',
+      routing: 'hash',
       forceRedirectUrl: '/'
     });
     })();
