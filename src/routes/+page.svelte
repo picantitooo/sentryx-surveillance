@@ -116,6 +116,7 @@
   let aiConnected = $derived(inference?.available === true);
   let aiReceiving = $derived(aiConnected && isSourceReceiving(source));
   let sourceAvailable = $derived(aiConnected && hasVideoSignal(source));
+  let selectedPlaybackReady = $derived(camera ? playbackReadyByCamera[camera.id] === true : false);
   let filteredDetections = $derived(detectionResults.filter((d) => {
     const cls = (d.clase ?? d.class_name ?? '').toLowerCase();
     const date = d.fecha_hora ?? d.created_at ?? '';
@@ -450,7 +451,7 @@
       const updatedId = editingCamera?.id ?? selectedId;
       editingCamera = null; name = ''; url = '';
       await refreshInference(updatedId);
-    } catch (e) { error = errorMessage(e); }
+    } catch (e) { formError = errorMessage(e); }
     finally { busy = false; }
   }
   async function activateInference(target: Camera | null = camera) {
@@ -672,9 +673,9 @@
 
       {#if view === 'overview'}
         <div class="overview-stats">
-          <button class="overview-stat" onclick={() => go('cameras')}><span class="stat-icon cameras" aria-hidden="true">▣</span><span>Cámaras en análisis</span><div><strong>{activeCameraCount}</strong><i aria-hidden="true">↗</i></div><small>de {cameras.length} cámaras registradas</small><div class="stat-progress"><i style={`width:${cameras.length ? (activeCameraCount / cameras.length) * 100 : 0}%`}></i></div></button>
+          <button class="overview-stat" onclick={() => go('cameras')}><span class="stat-icon cameras" aria-hidden="true">▣</span><span>Cámaras registradas</span><div><strong>{cameras.length}</strong><i aria-hidden="true">↗</i></div><small>{activeCameraCount} en análisis actualmente</small><div class="stat-progress"><i style={`width:${cameras.length ? (activeCameraCount / cameras.length) * 100 : 0}%`}></i></div></button>
           <button class="overview-stat" onclick={() => go('monitor')}><span class="stat-icon signal" aria-hidden="true">◉</span><span>Señal disponible</span><div><strong>{activeTransmissionCount}</strong><i aria-hidden="true">↗</i></div><small>{cameraCoverage}% de cobertura operativa</small><div class="stat-progress signal"><i style={`width:${cameraCoverage}%`}></i></div></button>
-          <button class="overview-stat" onclick={() => go('detections')}><span class="stat-icon detections" aria-hidden="true">⌁</span><span>Detecciones de hoy</span><div><strong>{todayDetections.length}</strong><i aria-hidden="true">↗</i></div><small>Últimos resultados de las fuentes activas</small><div class="stat-note">Ver historial completo →</div></button>
+          <button class="overview-stat" onclick={() => go('detections')}><span class="stat-icon detections" aria-hidden="true">⌁</span><span>Detecciones registradas</span><div><strong>{dashboardDetectionTotal ?? todayDetections.length}</strong><i aria-hidden="true">↗</i></div><small>{todayDetections.length} detecciones recibidas hoy</small><div class="stat-note">Ver historial completo →</div></button>
           <button class="overview-stat alert-card" onclick={() => go('alerts')}><span class="stat-icon alerts" aria-hidden="true">!</span><span>Alertas por revisar</span><div><strong>{activeAlerts.length}</strong><i aria-hidden="true">!</i></div><small>{activeAlerts.length ? 'Requieren revisión del operador' : 'No hay incidentes activos'}</small><div class="stat-note">Ir a eventos →</div></button>
         </div>
 
@@ -706,7 +707,7 @@
             <h2>Estado del sistema</h2>
             <div class="system-overview-list">
               <div><span>Motor de inferencia</span><strong class:offline={!aiConnected}><i></i>{aiConnected ? 'En línea' : 'No disponible'}</strong></div>
-              <div><span>Fuente de video</span><strong class:offline={!sourceAvailable && !isPending(source)} class:waiting={isPending(source)}><i></i>{isPending(source) ? 'Esperando procesamiento' : sourceAvailable ? 'Disponible' : sourceStatusLabel(source, aiConnected)}</strong></div>
+              <div><span>Fuente de video</span><strong class:offline={!sourceAvailable && !selectedPlaybackReady && !isPending(source)} class:waiting={isPending(source) && !selectedPlaybackReady}><i></i>{selectedPlaybackReady || sourceAvailable ? 'Disponible' : isPending(source) ? 'Esperando conexión de video' : sourceStatusLabel(source, aiConnected)}</strong></div>
               <div><span>Procesamiento de video</span><strong class:offline={!aiReceiving && !isPending(source)} class:waiting={isPending(source)}><i></i>{isPending(source) ? sourceWorkerLabel(source) || 'Esperando procesamiento' : aiReceiving ? sourceWorkerLabel(source) || 'Operativo' : sourceStatusLabel(source, aiConnected)}</strong></div>
               <div><span>Actualización del panel</span><strong class:offline={!lastRefresh}><i></i>{lastRefresh ? 'Conectada' : 'Pendiente'}</strong></div>
             </div>
@@ -727,8 +728,8 @@
           {#if loading}<div class="empty" role="status" aria-live="polite">Cargando cámaras...</div>
           {:else if !cameras.length}<div class="empty"><span class="placeholder-icon">▣</span><h3>Aún no hay cámaras</h3><p>Registra una transmisión para habilitar el monitor.</p><button class="btn primary" onclick={showRegistration}>Agregar cámara</button></div>
           {:else}
-            <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Registro</th><th scope="col">Acciones</th></tr></thead>
-              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><span class="registration-date">{item.registeredAt ? fmtDate(item.registeredAt) : 'Sin fecha disponible'}</span></td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
+            <div class="table-scroll"><table class="camera-table"><caption class="sr-only">Inventario de cámaras registradas</caption><thead><tr><th scope="col">Cámara</th><th scope="col">Conexión</th><th scope="col">Estado de IA</th><th scope="col">Acciones</th></tr></thead>
+              <tbody>{#each cameras as item (item.id)}<tr><td><div class="camera-identity"><span aria-hidden="true">▣</span><div><strong>{cameraLabel(item)}</strong><small>{item.name}</small></div></div></td><td><span class="connection-badge"><i></i> MediaMTX · WebRTC</span><small class="camera-path">/{item.streamPath ?? item.id}</small></td><td><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill camera-status"><i></i>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span>{#if sourceWorkerLabel(inferenceByCamera[item.id]?.source)}<small>{sourceWorkerLabel(inferenceByCamera[item.id]?.source)}</small>{/if}</td><td><div class="table-actions icon-actions"><button class="text-btn monitor-action icon-btn" onclick={() => selectCamera(item)} disabled={busy} aria-label={`Ver monitor de ${cameraLabel(item)}`} title="Ver monitor">◉</button><button class="text-btn icon-btn" onclick={(event) => showEditCamera(item, event)} disabled={busy} aria-label={`Editar ${cameraLabel(item)}`} title="Editar cámara">✎</button><button class="text-btn icon-btn" onclick={() => activateInference(item)} disabled={busy} aria-label={`Reintentar IA en ${cameraLabel(item)}`} title="Reintentar IA">↻</button><button class="text-btn destructive icon-btn" onclick={() => deleteCamera(item)} disabled={busy} aria-label={`Eliminar ${cameraLabel(item)}`} title="Eliminar cámara">×</button></div></td></tr>{/each}</tbody>
             </table></div>
           {/if}
         </section>
@@ -739,9 +740,9 @@
           <div class="camera-wall">
             {#each paginatedMonitorCameras as item (item.id)}
               <section class="surface camera-tile">
-                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill">{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</span></div>
+                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id) || playbackReadyByCamera[item.id]} class:waiting={isPending(inferenceByCamera[item.id]?.source) && !playbackReadyByCamera[item.id]} class="pill">{monitorStatusLabel(item.id)}</span></div>
                 <div class="tile-stream">
-                  <iframe src={item.url} title={`Video de ${item.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+                  <iframe src={item.url} title={`Video de ${item.name}`} onload={() => markPlaybackReady(item.id)} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
                   <span class="source-mark" aria-hidden="true">SOURCE&nbsp;&nbsp;/&nbsp;&nbsp;CCTV</span>
                 </div>
                 <div class="camera-tile-foot">
@@ -760,19 +761,19 @@
         {:else}
           <div class="monitor-grid">
             <section class="surface stream-surface">
-              <div class="section-title"><div><h2>{cameraLabel(camera)}</h2><p>{camera.name} · MediaMTX · WebRTC</p></div><div class="stream-actions"><button class="text-btn" onclick={() => showPlayer = !showPlayer}>{showPlayer ? 'Ocultar' : 'Mostrar'}</button><a class="external" href={camera.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir transmisión original de ${camera.name} en una nueva ventana`}>Abrir original ↗</a></div></div>
+              <div class="section-title"><div><h2>{cameraLabel(camera)}</h2></div><div class="stream-actions"><button class="text-btn" onclick={() => showPlayer = !showPlayer}>{showPlayer ? 'Ocultar' : 'Mostrar'}</button><a class="external" href={camera.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir transmisión original de ${camera.name} en una nueva ventana`}>Abrir original ↗</a></div></div>
               <div class="stream">
-                {#if showPlayer}{#key camera.id}<iframe src={camera.url} title={`Video de ${camera.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>{/key}
+                {#if showPlayer}{#key camera.id}<iframe src={camera.url} title={`Video de ${camera.name}`} onload={() => markPlaybackReady(camera.id)} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>{/key}
                 {:else}<div class="stream-paused"><span>◉</span><strong>Reproductor oculto</strong><p>La inferencia continúa en el servidor mientras esté activa.</p></div>{/if}
               </div>
               <div class="stream-footer"><span><span class="led live"></span> Fuente registrada</span><span>La reproducción se conecta directamente a AWS</span></div>
             </section>
             <div class="monitor-aside">
-              <section class="surface"><div class="section-title"><div><h2>Inteligencia artificial</h2><p>Estado de FastAPI</p></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
+              <section class="surface"><div class="section-title"><div><h2>Estado del análisis</h2></div><span class:positive={aiReceiving} class="pill">{aiReceiving ? 'Analizando' : aiConnected ? 'Conectada' : 'No disponible'}</span></div>
                 <div class="metric-list"><div><span>Estado técnico del receptor</span><strong>{source?.status ?? '—'}</strong></div><div><span>Estado del incidente</span><strong class:positive={liveIncident} class:offline={!liveIncident && !liveClosing} class:waiting={liveClosing}><i></i>{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</strong></div><div><span>Puntaje de anomalía VadCLIP</span><strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></div><div><span>Fotogramas recibidos</span><strong>{source?.frames_received ?? '—'}</strong></div><div><span>Último procesamiento</span><strong>{latestProcessingMs == null ? '—' : `${Number(latestProcessingMs).toFixed(2)} ms`}</strong></div><div><span>Último fotograma</span><strong>{source?.last_frame_age_seconds == null ? '—' : `${source.last_frame_age_seconds} s`}</strong></div></div>
-                <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar IA'}</button>
+                <button class="btn secondary full" onclick={() => activateInference()} disabled={busy}>{busy ? 'Solicitando...' : 'Activar / reintentar análisis'}</button>
               </section>
-              <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2><p>VideoMAE + estado de incidente VadCLIP</p></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
+              <section class="surface"><div class="section-title"><div><h2>Clasificación en vivo</h2></div><span class:positive={liveIncident} class:waiting={liveClosing} class="pill">{liveClosing ? 'Finalizando…' : liveIncident ? 'Incidente activo' : 'Sin incidente'}</span></div>
                 {#if liveIncident && latest}<div class="prediction-label">{labelClass(latest.clase)}</div><div class="prediction-confidence"><span>Confianza VideoMAE <strong>{confidence(latest.confianza)}</strong></span><span>Anomalía VadCLIP <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></span></div><div class="tiny">{fmtDate(latest.fecha_hora)}</div>
                 {:else}<div class="placeholder compact"><span class="placeholder-icon">◎</span><strong>{liveClosing ? 'Finalizando incidente…' : 'Sin incidente activo'}</strong><p>Anomalía VadCLIP: <strong>{liveAnomalyScore == null ? '—' : confidence(liveAnomalyScore)}</strong></p></div>{/if}
               </section>
@@ -836,10 +837,11 @@
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeRegistration(); }}>
     <div class="dialog" bind:this={dialogElement} role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-description" onkeydown={handleDialogKeydown}>
       <div class="dialog-top"><div><div class="eyebrow">CONFIGURACIÓN DE FUENTE</div><h2 id="modal-title">{editingCamera ? 'Editar cámara' : 'Registrar cámara'}</h2><p id="modal-description">{editingCamera ? 'Actualiza el nombre o la transmisión vinculada.' : 'Vincula una transmisión existente de MediaMTX.'}</p></div><button class="close" type="button" aria-label="Cerrar" onclick={closeRegistration}>×</button></div>
-      <form onsubmit={registerCamera}>
+      <form onsubmit={registerCamera} novalidate>
         <label for="name">Nombre de la cámara <span>*</span></label><input id="name" data-dialog-initial-focus required maxlength="100" bind:value={name} placeholder="Ej. Cámara de entrada" />
         <label for="url">Dirección WebRTC segura <span>*</span></label><input id="url" type="url" required pattern="https://.*" title="La dirección debe comenzar con https://" bind:value={url} placeholder="https://servidor/camera01/" />
         <p class="form-help">Por seguridad, solo se permiten direcciones que comiencen con <strong>https://</strong>.</p>
+        {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
         <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si cambias la ruta, reinicia el análisis desde el inventario para aplicar la nueva fuente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
         <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration} disabled={busy}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? (editingCamera ? 'Aplicando cambios...' : 'Registrando...') : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
       </form>
