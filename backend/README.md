@@ -84,6 +84,25 @@ El worker guarda el estado de cada cámara y recorta en CPU; el servidor no guar
 `POST /infer/detect` y `POST /infer/classify` con `X-API-Key`. Si se cae, cada bloque fallido interrumpe la
 alerta (`processing_error`), el worker sigue vivo y retoma solo cuando el servidor vuelve.
 
+### Workers en Azure
+
+`deploy/azure` crea hasta 3 VMs con Terraform y despliega en ellas el último commit, con el servidor de
+inferencia en un equipo con GPU conectado por Tailscale. Requiere Terraform, Azure CLI con sesión iniciada,
+Tailscale, la llave `~/.ssh/sentrix_azure`, `deploy/azure/terraform/terraform.tfvars` y el puerto 8099 abierto
+solo para Tailscale. La clave de Tailscale debe ser reutilizable y no efímera.
+
+```powershell
+.\backend\start_inference.ps1 -BindHost <IP de Tailscale del equipo>
+$s = Read-Host "Clave de Tailscale" -AsSecureString; $env:TAILSCALE_AUTHKEY = [System.Net.NetworkCredential]::new("", $s).Password
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py subir --capacidad 6
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py autoescalar --capacidad 4
+.\.venv\Scripts\python.exe deploy/azure/workers_azure.py bajar
+```
+
+`subir` deja cada worker con un tope de 6 cámaras y `autoescalar` calcula con 4 por VM: si cae una VM, las demás
+absorben sus cámaras. `bajar` detiene los workers, comprueba que no queden clips sin subir y destruye todo. Las VMs
+cobran mientras existan.
+
 ## Configuración (`backend/.env`)
 
 | Variable | Uso |
