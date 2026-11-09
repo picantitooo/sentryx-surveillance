@@ -103,16 +103,24 @@ class WebRTCReceiver:
     async def interrupt_alert(self, session, reason):
         alert, session.active_alert = session.active_alert, None
         # Híbrido: si VadCLIP ya había soltado, el evento termina ahí y no en la última ventana.
-        end = session.alert_end_hint if session.alert_end_hint is not None else session.last_window_timestamp
+        hint = session.alert_end_hint
+        end = hint if hint is not None else session.last_window_timestamp
         session.alert_end_hint = None
         if alert is not None:
             try:
                 await self.alert_finished(session, alert["id"], end, complete=False, reason=reason)
             except Exception:
                 logger.exception("No se pudo cerrar el clip del evento interrumpido")
-        if self.alert_store is not None:
+        # Sin alerta abierta no se toca la base: bloquea la tabla para todas las cámaras y, si un hueco la
+        # dispara, la demora genera más huecos. Al desconectarse sí va, para cerrar la sesión.
+        if self.alert_store is not None and (alert is not None or reason == "source_disconnected"):
             # El evento termina en la última ventana procesada antes del corte.
-            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason, end)
+            try:
+                count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason, end)
+            except Exception:
+                # Sigue abierta en la base: se conserva para reintentar en el siguiente hueco.
+                session.active_alert, session.alert_end_hint = alert, hint
+                raise
             if count:
                 await self.log_event("alert_interrupted", "Evento interrumpido: " + reason,
                                      session=session, level="WARNING")

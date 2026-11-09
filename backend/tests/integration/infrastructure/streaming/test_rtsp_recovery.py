@@ -28,6 +28,7 @@ def test_rtsp_reconnects_when_alerts_logs_and_close_fail(configured, monkeypatch
         session = Session(pc=module._RTSPPeer(), source_id="cam",
                           buffer=WindowBuffer(PipelineConfig()), alert_policy=EventPolicy())
         session.camera_config = receiver.default_camera
+        session.active_alert = {"id": "alerta"}  # Con alerta abierta: si no, no se escribe en la base.
         receiver.sessions[session.id] = session
         opened = []
 
@@ -52,6 +53,7 @@ def test_rtsp_reconnects_when_alerts_logs_and_close_fail(configured, monkeypatch
         await asyncio.wait_for(receiver._read_loop(session), 5)
         assert len(opened) == 2
         assert session.pending_alert_interruption
+        assert session.active_alert == {"id": "alerta"}  # Sigue pendiente: se reintenta en el siguiente hueco.
         assert session.rtsp_status == "reconnecting"
 
     asyncio.run(exercise())
