@@ -27,7 +27,9 @@ def main():
             listener.bind((host, args.port))
             listener.listen(socket.SOMAXCONN)
             listener.setblocking(False)
-        uvicorn.Server(uvicorn.Config("app.main:app", workers=1, port=args.port)).run(sockets=sockets)
+        # Sin tope, una conexión de un worker que desapareció deja el apagado esperando para siempre.
+        uvicorn.Server(uvicorn.Config("app.main:app", workers=1, port=args.port,
+                                      timeout_graceful_shutdown=5)).run(sockets=sockets)
     except OSError as error:
         if error.errno == errno.EADDRINUSE or getattr(error, "winerror", None) == 10048:
             raise SystemExit(f"El puerto {args.port} ya esta ocupado. Comprueba si el backend ya esta encendido antes de iniciar otra instancia.") from None
