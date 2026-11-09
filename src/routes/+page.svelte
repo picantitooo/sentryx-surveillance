@@ -49,6 +49,7 @@
   let selectedId = $state('');
   let inference = $state<InferenceResponse | null>(null);
   let inferenceByCamera = $state<Record<string, InferenceResponse>>({});
+  let playbackReadyByCamera = $state<Record<string, boolean>>({});
   let loading = $state(true);
   let connecting = $state(true);
   let busy = $state(false);
@@ -56,6 +57,7 @@
   let notice = $state('');
   let name = $state('Logitech C922');
   let url = $state(DEFAULT_URL);
+  let formError = $state('');
   let showPlayer = $state(true);
   let monitorExpanded = $state(false);
   let monitorPage = $state(1);
@@ -69,6 +71,8 @@
   const DETECTION_PAGE_SIZE = 10;
   let detectionResults = $state<Detection[]>([]);
   let dashboardDetections = $state<Detection[]>([]);
+  let dashboardDetectionTotal = $state<number | null>(null);
+  let dashboardAnalyticsLastRefresh = $state<Date | null>(null);
   let detectionTotal = $state<number | null>(null);
   let detectionsLoading = $state(false);
   let serviceLogs = $state<ServiceLog[]>([]);
@@ -160,7 +164,7 @@
   let overviewAlerts = $derived(Object.entries(inferenceByCamera).flatMap(([cameraId, result]) =>
     (result.alerts ?? []).map((item) => ({ ...item, camera: item.camera ?? cameraId }))
   ));
-  let recentOverviewDetections = $derived([...overviewDetections].sort((left, right) => {
+  let recentOverviewDetections = $derived([...(dashboardDetections.length ? dashboardDetections : overviewDetections)].sort((left, right) => {
     const leftTime = new Date(left.fecha_hora ?? left.created_at ?? 0).getTime();
     const rightTime = new Date(right.fecha_hora ?? right.created_at ?? 0).getTime();
     return rightTime - leftTime;
@@ -297,14 +301,16 @@
     } catch { detectionResults = []; detectionTotal = 0; }
     finally { detectionsLoading = false; }
   }
-  async function loadDashboardAnalytics() {
-    const cached = readOperationalCache<DetectionListResponse>(DASHBOARD_DETECTIONS_CACHE_KEY);
-    if (cached) { dashboardDetections = cached.items ?? []; return; }
+  async function loadDashboardAnalytics(options: { force?: boolean } = {}) {
+    const cached = options.force ? null : readOperationalCache<DetectionListResponse>(DASHBOARD_DETECTIONS_CACHE_KEY);
+    if (cached) { dashboardDetections = cached.items ?? []; dashboardDetectionTotal = cached.total ?? null; return; }
     try {
       const data = await getJSON<DetectionListResponse>('/api/detections?limit=100&offset=0');
       dashboardDetections = data.items ?? [];
+      dashboardDetectionTotal = data.total ?? null;
       writeOperationalCache(DASHBOARD_DETECTIONS_CACHE_KEY, data);
-    } catch { dashboardDetections = []; }
+    } catch { dashboardDetections = []; dashboardDetectionTotal = null; }
+    finally { dashboardAnalyticsLastRefresh = new Date(); }
   }
   async function refreshServiceLogs() {
     serviceLogsLoading = true;
@@ -393,13 +399,31 @@
     const timer = setInterval(async () => {
       if (!mounted || !cameras.length || fetching) return;
       fetching = true;
-      try { await refreshAllInference(); } finally { fetching = false; }
+      try {
+        await refreshAllInference();
+        const analyticsExpired = !dashboardAnalyticsLastRefresh || Date.now() - dashboardAnalyticsLastRefresh.getTime() >= 30_000;
+        if (view === 'overview' && analyticsExpired) await loadDashboardAnalytics({ force: true });
+      } finally { fetching = false; }
     }, MONITOR_POLL_INTERVAL_MS);
     return () => { mounted = false; clearInterval(timer); };
   });
-  function clearFeedback() { notice = ''; error = ''; }
+  function clearFeedback() { notice = ''; error = ''; formError = ''; }
+  function validateCameraForm() {
+    const cleanName = name.trim();
+    const cleanUrl = url.trim().replace(/\/+$/, '');
+    if (!cleanName) return 'Ingresa el nombre de la cámara.';
+    if (cleanName.length > 100) return 'El nombre debe tener como máximo 100 caracteres.';
+    try { if (new URL(cleanUrl).protocol !== 'https:') return 'La dirección debe utilizar HTTPS.'; }
+    catch { return 'Ingresa una dirección HTTPS válida.'; }
+    const duplicate = cameras.find((item) => item.id !== editingCamera?.id && item.url.trim().replace(/\/+$/, '').toLowerCase() === cleanUrl.toLowerCase());
+    if (duplicate) return `Esta transmisión ya está vinculada a ${cameraLabel(duplicate)}.`;
+    name = cleanName; url = cleanUrl;
+    return '';
+  }
   async function registerCamera(event: SubmitEvent) {
-    event.preventDefault(); clearFeedback(); busy = true;
+    event.preventDefault(); clearFeedback(); formError = validateCameraForm();
+    if (formError) return;
+    busy = true;
     try {
       const parsedUrl = new URL(url.trim());
       if (parsedUrl.protocol !== 'https:') throw new Error('La dirección de la cámara debe utilizar HTTPS. Ejemplo: https://servidor/camera01/');
@@ -501,6 +525,14 @@
   }
   function sourceStatusLabel(item: InferenceSource | null | undefined, available = true) {
     return monitoringStatusLabel(item, available);
+  }
+  function monitorStatusLabel(cameraId: string) {
+    const result = inferenceByCamera[cameraId];
+    if (playbackReadyByCamera[cameraId] && isPending(result?.source)) return 'Video disponible · esperando IA';
+    return sourceStatusLabel(result?.source, result?.available);
+  }
+  function markPlaybackReady(cameraId: string) {
+    playbackReadyByCamera = { ...playbackReadyByCamera, [cameraId]: true };
   }
   function sourceWorkerLabel(item: InferenceSource | null | undefined) {
     if (!item?.worker_id) return '';
@@ -944,5 +976,9 @@
   th,.camera-table th,.logs-table th{padding-top:13px;padding-bottom:13px;color:#fff;font-size:10px;font-weight:800;letter-spacing:.45px;text-transform:uppercase}
   @media(max-width:1050px){.brand-emblem{width:48px;height:48px;flex-basis:48px}.brand-emblem img{width:48px;height:48px}}
   @media(max-width:580px){.brand-emblem{width:42px;height:42px;flex-basis:42px}.brand-emblem img{width:42px;height:42px}}
+  .form-error{margin:4px 0 0;padding:10px 12px;border:1px solid #efc9cb;border-radius:6px;background:#fff3f3;color:#a33f48;font-size:12px;font-weight:650}
+  /* Encabezado del historial técnico: evita el blanco sobre gris de la regla heredada. */
+  table.logs-table thead{background:linear-gradient(90deg,#082b60,#1469ac)}
+  table.logs-table th{background:transparent!important;color:#fff!important;border:0;font-weight:800}
 </style>
 
