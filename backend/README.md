@@ -84,6 +84,8 @@ El worker guarda el estado de cada cámara y recorta en CPU; el servidor no guar
 `POST /infer/detect` y `POST /infer/classify` con `X-API-Key`. Si se cae, cada bloque fallido interrumpe la
 alerta (`processing_error`), el worker sigue vivo y retoma solo cuando el servidor vuelve.
 
+Si existe `modelo/fp16` (fuera de git), `start_inference.ps1` usa VideoMAE en FP16, que ocupa cerca de la mitad de VRAM.
+
 ### Workers en Azure
 
 `deploy/azure` crea hasta 3 VMs con Terraform y despliega en ellas el último commit, con el servidor de

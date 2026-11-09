@@ -45,6 +45,7 @@ htmlcov/
 *.log
 /modelo/gpu_profile_*.json
 /modelo/gpu_validation.json
+/modelo/fp16/
 
 # Respaldos privados y archivos temporales de edicion
 *.backup
