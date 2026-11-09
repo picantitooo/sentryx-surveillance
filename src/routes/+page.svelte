@@ -102,10 +102,8 @@
   let highContrast = $state(false);
   let reducedMotion = $state(false);
   let textSize = $state<'normal' | 'large' | 'xlarge'>('normal');
-  let highlightLinks = $state(false);
-  let hideImages = $state(false);
   let dyslexiaMode = $state(false);
-  let lineSpacing = $state(false);
+  let letterSpacing = $state(false);
   let alignedText = $state(false);
 
   let camera = $derived(cameras.find((item) => item.id === selectedId) ?? cameras[0] ?? null);
@@ -387,8 +385,10 @@
       highContrast = saved.highContrast === true;
       reducedMotion = saved.reducedMotion === true;
       textSize = ['normal', 'large', 'xlarge'].includes(saved.textSize) ? saved.textSize : 'normal';
-      highlightLinks = saved.highlightLinks === true; hideImages = saved.hideImages === true;
-      dyslexiaMode = saved.dyslexiaMode === true; lineSpacing = saved.lineSpacing === true; alignedText = saved.alignedText === true;
+      dyslexiaMode = saved.dyslexiaMode === true;
+      // Conserva la preferencia anterior durante la transición de nombre.
+      letterSpacing = saved.letterSpacing === true || saved.lineSpacing === true;
+      alignedText = saved.alignedText === true;
     } catch { /* Las preferencias son opcionales. */ }
     loadCamera().then(() => {
       if (!mounted) return;
@@ -574,11 +574,11 @@
     tick().then(() => openerElement?.focus());
   }
   function saveAccessibilityPreferences() {
-    localStorage.setItem('sentrix-accessibility', JSON.stringify({ highContrast, reducedMotion, textSize, highlightLinks, hideImages, dyslexiaMode, lineSpacing, alignedText }));
+    localStorage.setItem('sentrix-accessibility', JSON.stringify({ highContrast, reducedMotion, textSize, dyslexiaMode, letterSpacing, alignedText }));
   }
   function setTextSize(value: 'normal' | 'large' | 'xlarge') { textSize = value; saveAccessibilityPreferences(); }
   function resetAccessibilityPreferences() {
-    highContrast = false; reducedMotion = false; textSize = 'normal'; highlightLinks = false; hideImages = false; dyslexiaMode = false; lineSpacing = false; alignedText = false; saveAccessibilityPreferences();
+    highContrast = false; reducedMotion = false; textSize = 'normal'; dyslexiaMode = false; letterSpacing = false; alignedText = false; saveAccessibilityPreferences();
   }  function handleDialogKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') { event.preventDefault(); closeRegistration(); return; }
     if (event.key !== 'Tab' || !dialogElement) return;
@@ -606,7 +606,7 @@
 </svelte:head>
 <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
 
-<div class="shell" class:a11y-high-contrast={highContrast} class:a11y-reduced-motion={reducedMotion} class:a11y-text-large={textSize === 'large'} class:a11y-text-xlarge={textSize === 'xlarge'} class:a11y-highlight-links={highlightLinks} class:a11y-hide-images={hideImages} class:a11y-dyslexia={dyslexiaMode} class:a11y-line-spacing={lineSpacing} class:a11y-aligned-text={alignedText}>
+<div class="shell" class:a11y-high-contrast={highContrast} class:a11y-reduced-motion={reducedMotion} class:a11y-text-large={textSize === 'large'} class:a11y-text-xlarge={textSize === 'xlarge'} class:a11y-dyslexia={dyslexiaMode} class:a11y-letter-spacing={letterSpacing} class:a11y-aligned-text={alignedText}>
   <aside class="sidebar" aria-label="Panel lateral">
     <a class="brand" href="/" aria-label="SentriX: ir al resumen general" onclick={(e) => { e.preventDefault(); go('overview'); }}>
       <span class="brand-emblem"><img src="/sentrix-logo-192.png" alt="" /></span>
@@ -634,16 +634,14 @@
     {#if accessibilityOpen}
       <aside id="accessibility-panel" class="accessibility-panel" aria-label="Menú de accesibilidad">
         <div class="accessibility-panel-head"><div><p class="a11y-kicker">SENTRIX</p><h2>Menú de accesibilidad</h2></div><button type="button" class="a11y-close" aria-label="Cerrar menú de accesibilidad" onclick={() => accessibilityOpen = false}>×</button></div>
-        <p class="a11y-intro">Elige los ajustes que necesitas. Se guardan en este navegador.</p>
+        <p class="a11y-intro">Ajustes de lectura y navegación. Se guardan solo en este navegador.</p>
         <div class="a11y-grid">
-          <button type="button" class:active={highContrast} aria-pressed={highContrast} onclick={() => { highContrast = !highContrast; saveAccessibilityPreferences(); }}><span aria-hidden="true">◐</span><strong>Contraste +</strong></button>
-          <button type="button" class:active={highlightLinks} aria-pressed={highlightLinks} onclick={() => { highlightLinks = !highlightLinks; saveAccessibilityPreferences(); }}><span aria-hidden="true">⛓</span><strong>Resaltar enlaces</strong></button>
+          <button type="button" class:active={highContrast} aria-pressed={highContrast} aria-label="{highContrast ? 'Desactivar' : 'Activar'} contraste reforzado en todo el panel" onclick={() => { highContrast = !highContrast; saveAccessibilityPreferences(); }}><span aria-hidden="true">◐</span><strong>Contraste reforzado</strong><small>Todo el panel</small></button>
           <button type="button" class:active={textSize !== 'normal'} aria-pressed={textSize !== 'normal'} onclick={() => setTextSize(textSize === 'normal' ? 'large' : textSize === 'large' ? 'xlarge' : 'normal')}><span aria-hidden="true">Tᵀ</span><strong>Agrandar texto</strong><small>{textSize === 'normal' ? 'Normal' : textSize === 'large' ? 'Grande' : 'Muy grande'}</small></button>
-          <button type="button" class:active={lineSpacing} aria-pressed={lineSpacing} onclick={() => { lineSpacing = !lineSpacing; saveAccessibilityPreferences(); }}><span aria-hidden="true">↔</span><strong>Espaciado de texto</strong></button>
-          <button type="button" class:active={reducedMotion} aria-pressed={reducedMotion} onclick={() => { reducedMotion = !reducedMotion; saveAccessibilityPreferences(); }}><span aria-hidden="true">◌</span><strong>Detener animaciones</strong></button>
-          <button type="button" class:active={hideImages} aria-pressed={hideImages} onclick={() => { hideImages = !hideImages; saveAccessibilityPreferences(); }}><span aria-hidden="true">▧</span><strong>Ocultar imágenes</strong></button>
-          <button type="button" class:active={dyslexiaMode} aria-pressed={dyslexiaMode} onclick={() => { dyslexiaMode = !dyslexiaMode; saveAccessibilityPreferences(); }}><span aria-hidden="true">Dƒ</span><strong>Lectura asistida</strong></button>
-          <button type="button" class:active={alignedText} aria-pressed={alignedText} onclick={() => { alignedText = !alignedText; saveAccessibilityPreferences(); }}><span aria-hidden="true">☰</span><strong>Texto alineado</strong></button>
+          <button type="button" class:active={letterSpacing} aria-pressed={letterSpacing} onclick={() => { letterSpacing = !letterSpacing; saveAccessibilityPreferences(); }}><span aria-hidden="true">↔</span><strong>Separar letras</strong><small>Mejora la lectura</small></button>
+          <button type="button" class:active={dyslexiaMode} aria-pressed={dyslexiaMode} onclick={() => { dyslexiaMode = !dyslexiaMode; saveAccessibilityPreferences(); }}><span aria-hidden="true">Dƒ</span><strong>Lectura para dislexia</strong><small>Tipografía y ritmo legibles</small></button>
+          <button type="button" class:active={alignedText} aria-pressed={alignedText} onclick={() => { alignedText = !alignedText; saveAccessibilityPreferences(); }}><span aria-hidden="true">☰</span><strong>Alinear lectura</strong><small>Texto a la izquierda</small></button>
+          <button type="button" class:active={reducedMotion} aria-pressed={reducedMotion} onclick={() => { reducedMotion = !reducedMotion; saveAccessibilityPreferences(); }}><span aria-hidden="true">◌</span><strong>Reducir movimiento</strong><small>Sin transiciones visuales</small></button>
         </div>
         <div class="a11y-reader-note"><strong>Lectores de pantalla</strong><p>Compatible con NVDA, Narrador de Windows, VoiceOver y TalkBack. Activa el lector desde tu dispositivo.</p></div>
         <button type="button" class="a11y-reset" onclick={resetAccessibilityPreferences}><span aria-hidden="true">↻</span> Restablecer configuraciones</button>
@@ -957,7 +955,8 @@
   /* Panel visible de preferencias de accesibilidad. */
   .accessibility-trigger{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:5px 10px 5px 6px;border:1px solid #a9c5e2;border-radius:20px;color:#174b80;background:#fff;font-weight:750;font-size:12px}.accessibility-trigger:hover,.accessibility-trigger[aria-expanded="true"]{background:#eaf4ff;border-color:#075fd3}.accessibility-mark{width:27px;height:27px;display:grid;place-items:center;border-radius:50%;background:#075fd3}.accessibility-mark svg{width:24px;height:24px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}.accessibility-mark svg>circle:first-child{fill:#075fd3;stroke:#12d7f2}.accessibility-mark .person-head{fill:#fff;stroke:none}
   .accessibility-panel{position:fixed;z-index:70;top:0;right:0;width:min(430px,100vw);height:100dvh;overflow:auto;padding:0 18px 22px;background:#f1f4f8;color:#092650;box-shadow:-18px 0 44px #041b4352}.accessibility-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 -18px 16px;padding:21px 20px 18px;background:linear-gradient(135deg,#06275a,#075fd3);color:#fff}.a11y-kicker{margin:0 0 4px!important;color:#9fe9f7!important;font-size:10px!important;font-weight:800!important;letter-spacing:1.5px}.accessibility-panel h2{margin:0;font-size:21px;line-height:1.15}.a11y-close{width:44px;height:44px;border:2px solid #b9eafa;border-radius:50%;background:#0b4ead;color:#fff;font-size:33px;line-height:1}.a11y-intro{margin:0 3px 15px;color:#46627e;font-size:13px;line-height:1.45}.a11y-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.a11y-grid button{min-height:132px;padding:14px 10px;border:2px solid transparent;border-radius:13px;background:#fff;color:#092650;box-shadow:0 2px 7px #06275a10;font-weight:750;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center}.a11y-grid button>span{font-size:35px;line-height:1;font-family:Arial,sans-serif}.a11y-grid button strong{font-size:14px;line-height:1.15}.a11y-grid button small{color:#54718f;font-size:11px}.a11y-grid button:hover,.a11y-grid button.active{border-color:#075fd3;background:#f7fbff}.a11y-grid button.active{box-shadow:inset 0 0 0 1px #12d7f2}.a11y-reader-note{margin:15px 0;padding:13px 14px;border:1px solid #badce8;border-radius:10px;background:#e8f7fa}.a11y-reader-note strong{font-size:14px}.a11y-reader-note p{margin:5px 0 0;color:#365b70;font-size:12px;line-height:1.45}.a11y-reset{width:100%;min-height:48px;border:0;border-radius:10px;background:#075fd3;color:#fff;font-size:14px;font-weight:800}.a11y-reset span{font-size:22px;vertical-align:-2px;margin-right:6px}
-  .shell.a11y-high-contrast{filter:contrast(1.25)}.shell.a11y-high-contrast .surface,.shell.a11y-high-contrast .stat,.shell.a11y-high-contrast .overview-stat{border-color:#000;box-shadow:none}.shell.a11y-high-contrast .sidebar{background:#000}.shell.a11y-high-contrast .btn.primary,.shell.a11y-high-contrast .overview-alert-button{background:#003f8f;color:#fff}.shell.a11y-reduced-motion *{animation:none!important;transition:none!important;scroll-behavior:auto!important}.shell.a11y-text-large{zoom:1.15}.shell.a11y-text-xlarge{zoom:1.3}.shell.a11y-highlight-links a:not(.brand){text-decoration:underline!important;text-decoration-thickness:2px!important;text-underline-offset:3px!important;color:#003f8f!important;font-weight:800}.shell.a11y-hide-images img:not(.accessibility-mark *){visibility:hidden}.shell.a11y-dyslexia{font-family:Verdana,Arial,sans-serif;letter-spacing:.04em;word-spacing:.08em}.shell.a11y-line-spacing p,.shell.a11y-line-spacing td{line-height:2!important;letter-spacing:.05em}.shell.a11y-aligned-text p,.shell.a11y-aligned-text td{text-align:left!important}
+  /* Estos ajustes afectan el contenido completo del panel, no solo el menú. */
+  .shell.a11y-high-contrast{filter:contrast(1.4) saturate(.9)}.shell.a11y-high-contrast .surface,.shell.a11y-high-contrast .stat,.shell.a11y-high-contrast .overview-stat,.shell.a11y-high-contrast table,.shell.a11y-high-contrast .dialog{border-color:#000;box-shadow:none}.shell.a11y-high-contrast .sidebar{background:#000}.shell.a11y-high-contrast .btn.primary,.shell.a11y-high-contrast .overview-alert-button{background:#002f6b;color:#fff}.shell.a11y-reduced-motion *{animation:none!important;transition:none!important;scroll-behavior:auto!important}.shell.a11y-text-large{zoom:1.15}.shell.a11y-text-xlarge{zoom:1.3}.shell.a11y-dyslexia{font-family:Verdana,Arial,sans-serif;letter-spacing:.025em;word-spacing:.1em}.shell.a11y-dyslexia :is(p,td,.subtitle,.footnote,.tiny){line-height:1.8!important}.shell.a11y-letter-spacing :is(p,td,th,.subtitle,.footnote,.tiny,.banner,.form-help){letter-spacing:.08em!important;word-spacing:.12em}.shell.a11y-aligned-text :is(p,td,th,.subtitle,.footnote,.tiny,.banner,.form-help){text-align:left!important;text-wrap:pretty}.shell.a11y-aligned-text :is(.event-card,.activity-row,.attention-list button,.metric-list>div){justify-items:start;text-align:left}
   @media(max-width:580px){.accessibility-trigger{font-size:0;padding:5px}.accessibility-trigger>span:last-child{display:none}.accessibility-panel{width:100vw}.shell.a11y-text-large,.shell.a11y-text-xlarge{zoom:1}}
   /* Correcciones Lighthouse: contraste AA para texto secundario sobre fondos claros. */
   .subtitle,.placeholder,.empty,.footnote,.tiny,.section-title p,.stat span,.table-empty,.overview-empty,.pagination-bar,.dialog p { color:#4a6178; }
