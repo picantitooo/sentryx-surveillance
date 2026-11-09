@@ -17,3 +17,9 @@ class Conflict(ApplicationError):
 
 class Unavailable(ApplicationError):
     pass
+
+class Unauthorized(ApplicationError):
+    pass
+
+class Forbidden(ApplicationError):
+    pass
