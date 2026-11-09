@@ -4,7 +4,7 @@ import inspect
 from pydantic import ValidationError
 from app.domain.camera import CameraRegistration
 from app.application.ports import CameraRepository, SourceGateway
-from app.application.errors import InvalidInput, NotFound, Conflict, Unavailable
+from app.application.errors import InvalidInput, NotFound, Conflict, Unavailable, Forbidden
 
 class CameraService:
     def __init__(self, repository: CameraRepository, sources: SourceGateway, default_camera, lock):
@@ -60,13 +60,16 @@ class CameraService:
                 raise Conflict("Camara ya registrada")
             return camera.public_config()
 
-    async def update_camera(self, source_id: str, body: CameraRegistration):
+    async def update_camera(self, source_id: str, body: CameraRegistration, may_change_enabled: bool = True):
         async with self.lock:
             if source_id != body.source_id:
                 raise InvalidInput("source_id no se puede cambiar")
             if self.sources.active(source_id):
                 raise Conflict("Detener la camara antes de editarla")
-            camera = self._resolve_camera(body, await self._camera(source_id))
+            current = await self._camera(source_id)
+            if not may_change_enabled and "enabled" in body.model_fields_set and body.enabled != current.enabled:
+                raise Forbidden("Solo un admin puede activar o desactivar una camara")
+            camera = self._resolve_camera(body, current)
             if not await self._storage(self.repository.save, camera, update=True):
                 raise NotFound("Camara no registrada")
             return camera.public_config()

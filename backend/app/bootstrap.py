@@ -16,7 +16,7 @@ from app.presentation.http.logs import logs_router
 from app.infrastructure.persistence.alerts import AlertStore
 from app.domain.alerts import EventPolicy
 from app.presentation.http.alerts import alerts_router
-from app.presentation.http.security import ApiKeyGuard, document_api_key
+from app.presentation.http.security import ApiKeyGuard, ClerkGuard, document_api_key, error_status
 
 from app.domain.inference import Window, Prediction
 from app.application.ports import Predictor
@@ -27,7 +27,7 @@ from app.application.retention import Retention
 from app.application.clips import ClipQueries
 from app.infrastructure.persistence.clips import ClipStore
 from app.infrastructure.clips.storage import ObjectStorage
-from app.application.errors import ApplicationError, InvalidInput, InvalidOffer, NotFound, Conflict, Unavailable
+from app.application.errors import ApplicationError
 from app.infrastructure.inference.mock import MockPredictor
 from app.infrastructure.persistence.cameras import CameraStore
 from app.infrastructure.settings import event_policy as configured_event_policy
@@ -39,16 +39,23 @@ from starlette.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 ROLES = ("all", "api", "worker")
+AUTH_MODES = ("api_key", "both", "clerk")
 
 
 def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                transport: str | None = None, detection_db=None, log_db=None,
-               role: str | None = None, coordination_store=None):
+               role: str | None = None, coordination_store=None, user_service=None):
     # all: un proceso hace todo (comportamiento original). api: sin modelo; atiende al panel y
     # registra qué cámaras deben correr. worker: procesa las cámaras que le asigna la coordinación.
     role = role or os.getenv("SENTRIX_ROLE", "all").strip().lower()
     if role not in ROLES:
         raise ValueError("SENTRIX_ROLE debe ser all, api o worker")
+    # api_key: como siempre. both: transición, acepta sesión o clave. clerk: solo sesión de usuario.
+    auth_mode = os.getenv("SENTRIX_AUTH_MODE", "api_key").strip().lower()
+    if auth_mode not in AUTH_MODES:
+        raise ValueError("SENTRIX_AUTH_MODE debe ser api_key, both o clerk")
+    if role == "worker":
+        auth_mode = "api_key"  # El worker no atiende personas: habla con Neon y R2.
     database_url = os.getenv("SENTRIX_DATABASE_URL")
     if not database_url and not (detection_db or os.getenv("SENTRIX_DETECTION_DB")):
         raise ValueError("Configurar SENTRIX_DATABASE_URL con una conexión PostgreSQL")
@@ -146,6 +153,16 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
             clip_store, clip_storage, max_bytes=int(clips_max_gb * 1e9),
             target=float(os.getenv("SENTRIX_CLIPS_PURGE_TARGET", "0.8")),
             interval=float(os.getenv("SENTRIX_CLIPS_PURGE_INTERVAL", "300")), on_purge=report_clip_purge)
+    webhook_verifier = None
+    if auth_mode != "api_key":
+        from app.infrastructure.auth.webhooks import WebhookVerifier
+        webhook_verifier = WebhookVerifier(os.getenv("CLERK_WEBHOOK_SECRET", ""))
+        if user_service is None:
+            from app.infrastructure.auth.factory import user_service_from_env
+            user_service = user_service_from_env(database_url)
+        user_service.log = log_store
+    else:
+        user_service = None
     @asynccontextmanager
     async def lifespan(app):
         if database_url:
@@ -159,6 +176,11 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                     finally:
                         connection.close()
             await asyncio.to_thread(initialize_storage)
+        if user_service is not None:
+            try:
+                await asyncio.to_thread(user_service.check_storage)
+            except Exception:
+                raise RuntimeError("Falta la tabla users: aplicar backend/migrations/2026-11-08_usuarios.sql") from None
         if clips is not None:
             try:
                 recovered = await asyncio.to_thread(clips.recover)
@@ -231,16 +253,18 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     app = FastAPI(title="SentriX · Servicio de inferencia", version="0.6.0", lifespan=lifespan,
                   description="VideoMAE CUDA; recepción RTSP/RTSPS o WebRTC y consulta de resultados HTTP.")
     app.add_middleware(BodyLimit)
-    app.add_middleware(ApiKeyGuard)
+    if user_service is None:
+        app.add_middleware(ApiKeyGuard)
+    else:
+        app.add_middleware(ClerkGuard, authenticate=user_service.authenticate, allow_api_key=auth_mode == "both")
     origins = [value.strip() for value in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,https://sentrix-vercel-upload.vercel.app").split(",") if value.strip()]
     app.add_middleware(CORSMiddleware, allow_origins=origins,
-                       allow_credentials=True, allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+                       allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
                        expose_headers=["X-Detection-ID"])
     @app.exception_handler(ApplicationError)
     async def application_error(request, error):
-        status = {InvalidInput: 422, InvalidOffer: 400, NotFound: 404, Conflict: 409, Unavailable: 503}.get(type(error), 500)
-        return JSONResponse(status_code=status, content={"detail": str(error)})
+        return JSONResponse(status_code=error_status(error), content={"detail": str(error)})
 
     if selected_transport == "rtsp":
         for router in rtsp_routers(camera_service):
@@ -253,6 +277,12 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
         unavailable="Almacenamiento de alertas no disponible", missing="Alerta no encontrada"),
         ClipQueries(alert_store, clip_store, clip_storage,
                     url_seconds=int(os.getenv("SENTRIX_CLIP_URL_SECONDS", "600")))))
+    if user_service is not None:
+        from app.presentation.http.users import auth_router, users_router, webhooks_router
+        app.include_router(auth_router(user_service))
+        app.include_router(users_router(user_service))
+        app.include_router(webhooks_router(user_service, webhook_verifier))
+    app.state.auth_mode = auth_mode
     app.state.video_receiver = receiver
     app.state.role = role
     app.state.worker_id = worker_id
@@ -269,5 +299,5 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                                       missing="Detección no encontrada")
     app.include_router(inference_router(app, detection_queries, sources or receiver, inference_service,
                        real_mode=real_mode, selected_transport=selected_transport, mock_type=MockPredictor))
-    document_api_key(app)
+    document_api_key(app, auth_mode)
     return app

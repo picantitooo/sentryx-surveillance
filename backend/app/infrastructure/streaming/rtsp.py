@@ -107,7 +107,9 @@ class RTSPReceiver(WebRTCReceiver):
         self.fingerprint = os.environ.get("SENTRIX_RTSP_SHA256", "")
         if self.protocol not in ("rtsp", "rtsps"):
             raise ValueError("SENTRIX_RTSP_PROTOCOL debe ser rtsp o rtsps")
-        if not os.getenv("SENTRIX_CONTROL_API_KEY"):
+        # Con autenticación solo por Clerk la clave compartida ya no se usa.
+        if (os.getenv("SENTRIX_AUTH_MODE", "api_key").strip().lower() != "clerk"
+                and not os.getenv("SENTRIX_CONTROL_API_KEY")):
             raise ValueError("Configurar SENTRIX_CONTROL_API_KEY")
         if self.protocol == "rtsps" and not (self.password and self.fingerprint):
             raise ValueError("RTSPS requiere SENTRIX_RTSP_PASSWORD y SENTRIX_RTSP_SHA256")
