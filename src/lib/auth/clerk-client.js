@@ -1,3 +1,5 @@
+import { esES } from '@clerk/localizations/es-ES';
+
 /** @type {Promise<any> | null} */
 let clerkPromise = null;
 
@@ -51,7 +53,10 @@ export async function getClerk() {
       await loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': publishableKey });
       const clerk = /** @type {any} */ (window).Clerk;
       if (!clerk) throw new Error('Clerk no se pudo inicializar.');
-      await clerk.load({ ui: { ClerkUI: /** @type {any} */ (window).__internal_ClerkUICtor } });
+      await clerk.load({
+        localization: esES,
+        ui: { ClerkUI: /** @type {any} */ (window).__internal_ClerkUICtor }
+      });
       return clerk;
     })().catch((error) => {
       // Un fallo temporal de red o Clerk no debe bloquear los siguientes reintentos.
@@ -69,7 +74,10 @@ export async function getSessionToken() {
 }
 
 export async function signOutAndRedirect() {
-  const clerk = await getClerk();
-  await clerk?.signOut();
-  window.location.assign('/sign-in');
+  try {
+    const clerk = await getClerk();
+    await clerk?.signOut();
+  } finally {
+    window.location.assign('/sign-in');
+  }
 }

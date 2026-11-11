@@ -39,5 +39,8 @@
 		"#application/*": "./src/application/*",
 		"#infrastructure/*": "./src/infrastructure/*",
 		"#presentation/*": "./src/presentation/*"
+	},
+	"dependencies": {
+		"@clerk/localizations": "^4.24.6"
 	}
 }
