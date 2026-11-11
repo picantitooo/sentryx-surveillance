@@ -1,5 +1,5 @@
 # Nodos worker de SentriX en Azure for Students para la prueba de escalamiento horizontal.
-# No contiene secretos: la clave de Tailscale y las de la base se envían después por SSH (ver preparar_nodos.py).
+# No contiene secretos: la clave de Tailscale y las de la base se envían después por SSH (ver workers_azure.py).
 terraform {
   required_version = ">= 1.6"
   required_providers {

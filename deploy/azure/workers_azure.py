@@ -255,7 +255,17 @@ def up(capacity):
     deploy(capacity)
 
 
+def group_exists():
+    result = subprocess.run([shutil.which("az"), "group", "exists", "-n", RESOURCE_GROUP, "--only-show-errors"],
+                            capture_output=True, text=True, timeout=120, check=True)
+    return result.stdout.strip() == "true"
+
+
 def down(force):
+    if not group_exists():
+        # Sin esta comprobación, el apply de abajo crearía las 3 VMs solo para destruirlas.
+        print("No hay nada que bajar: el grupo de recursos no existe.")
+        return
     terraform("apply")  # Por si cambió tu IP pública desde que se crearon: SSH solo acepta esa IP.
     power("encender")   # Una VM apagada no puede cerrar su sesión de Tailscale ni avisar si le quedan clips.
     nodes, user = load_nodes()

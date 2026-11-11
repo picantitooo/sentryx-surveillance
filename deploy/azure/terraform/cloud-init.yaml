@@ -1,5 +1,5 @@
 #cloud-config
-# Solo instala herramientas. Las claves y el código llegan después por SSH (preparar_nodos.py).
+# Solo instala herramientas. Las claves y el código llegan después por SSH (workers_azure.py).
 package_update: true
 packages:
   - docker.io

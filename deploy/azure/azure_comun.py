@@ -17,7 +17,7 @@ CONTAINER = "sx-worker"
 def load_nodes():
     """Devuelve [{name, public_ip}] y el usuario, leyendo `terraform output`."""
     if not shutil.which("terraform"):
-        raise SystemExit("No encuentro terraform en el PATH (ver LEEME.md).")
+        raise SystemExit("No encuentro terraform en el PATH (ver backend/README.md).")
     result = subprocess.run(["terraform", f"-chdir={TERRAFORM_DIR}", "output", "-json"],
                             capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
