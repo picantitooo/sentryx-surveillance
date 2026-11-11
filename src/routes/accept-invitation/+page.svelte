@@ -8,15 +8,19 @@
   onMount(() => {
     /** @type {any} */ let clerk;
     void (async () => {
-    const ticket = new URLSearchParams(window.location.search).get('__clerk_ticket');
-    if (!ticket) { error = 'La invitación no es válida o ya venció.'; return; }
-    clerk = await getClerk();
-    if (!clerk) { error = 'Falta configurar PUBLIC_CLERK_PUBLISHABLE_KEY para aceptar invitaciones.'; return; }
-    clerk.mountSignUp(host, {
-      routing: 'hash',
-      forceRedirectUrl: '/',
-      appearance: sentriXAppearance
-    });
+      try {
+        const ticket = new URLSearchParams(window.location.search).get('__clerk_ticket');
+        if (!ticket) { error = 'La invitación no es válida o ya venció.'; return; }
+        clerk = await getClerk();
+        if (!clerk) { error = 'Falta configurar PUBLIC_CLERK_PUBLISHABLE_KEY para aceptar invitaciones.'; return; }
+        clerk.mountSignUp(host, {
+          routing: 'hash',
+          forceRedirectUrl: '/',
+          appearance: sentriXAppearance
+        });
+      } catch (reason) {
+        error = `No se pudo cargar la invitación. ${reason instanceof Error ? reason.message : String(reason)}`;
+      }
     })();
     return () => { if (clerk && host) clerk.unmountSignUp(host); };
   });
