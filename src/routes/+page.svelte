@@ -3,6 +3,7 @@
   import { getClerk, getSessionToken, signOutAndRedirect } from '../lib/auth/clerk-client.js';
   import AlertsView from '../lib/presentation/components/alerts/AlertsView.svelte';
   import AlertDetailDialog from '../lib/presentation/components/alerts/AlertDetailDialog.svelte';
+  import NavIcon from '../lib/presentation/components/ui/NavIcon.svelte';
   import {
     hasVideoSignal,
     isSourceReceiving,
@@ -22,6 +23,7 @@
   interface InferenceResponse { available: boolean; source: InferenceSource | null; latestDetection?: Detection | null; detections?: Detection[]; alerts?: Alert[]; error?: string; }
   interface DashboardResponse { available: boolean; sources?: Record<string, InferenceSource>; alerts?: Alert[]; error?: string; }
   interface DetectionListResponse { items?: Detection[]; total?: number | null; }
+  interface DetectionSummary { date?: string; total?: number; anomalies?: number; by_class?: Record<string, number>; by_camera?: Record<string, number>; by_hour?: Array<{ hour: number; total: number; anomalies?: number }>; }
   interface ServiceLog { id?: string; fecha_hora?: string; camera?: string | null; event_type?: string; level?: string; message?: string; processing_ms?: number | null; inference_ms?: number | null; session_id?: string | null; window_id?: string | null; detection_id?: string | null; }
   interface CameraListResponse { cameras?: Camera[]; }
   interface RegisterCameraResponse { camera: Camera; inference?: { available?: boolean; error?: string }; }
@@ -35,14 +37,14 @@
   const OPERATIONAL_CACHE_TTL_MS = 30_000;
   const ALERTS_CACHE_PREFIX = 'sentrix-events-cache:';
   const DETECTIONS_CACHE_PREFIX = 'sentrix-detections-cache:';
-  const DASHBOARD_DETECTIONS_CACHE_KEY = 'sentrix-dashboard-detections-cache';
-  const menu: Array<{ id: ViewId; label: string; icon: string }> = [
-    { id: 'overview', label: 'Resumen general', icon: '▦' },
-    { id: 'monitor', label: 'Monitoreo en vivo', icon: '▣' },
-    { id: 'cameras', label: 'Cámaras', icon: '◫' },
-    { id: 'detections', label: 'Detecciones', icon: '≋' },
-    { id: 'alerts', label: 'Eventos y alertas', icon: '◇' },
-    { id: 'service', label: 'Registros del servicio', icon: '☷' }
+  const DASHBOARD_DETECTIONS_CACHE_KEY = 'sentrix-dashboard-detections-summary-v2';
+  const menu: Array<{ id: ViewId; label: string; icon: 'overview' | 'monitor' | 'camera' | 'detections' | 'alerts' | 'logs' }> = [
+    { id: 'overview', label: 'Resumen general', icon: 'overview' },
+    { id: 'monitor', label: 'Monitoreo en vivo', icon: 'monitor' },
+    { id: 'cameras', label: 'Cámaras', icon: 'camera' },
+    { id: 'detections', label: 'Detecciones', icon: 'detections' },
+    { id: 'alerts', label: 'Eventos y alertas', icon: 'alerts' },
+    { id: 'service', label: 'Registros del servicio', icon: 'logs' }
   ];
   let view = $state<ViewId>('overview');
   let modal = $state(false);
@@ -76,6 +78,7 @@
   const DETECTION_PAGE_SIZE = 10;
   let detectionResults = $state<Detection[]>([]);
   let dashboardDetections = $state<Detection[]>([]);
+  let dashboardSummary = $state<DetectionSummary | null>(null);
   let dashboardDetectionTotal = $state<number | null>(null);
   let dashboardAnalyticsLastRefresh = $state<Date | null>(null);
   let detectionTotal = $state<number | null>(null);
@@ -104,6 +107,7 @@
   let dialogElement = $state<HTMLDivElement | null>(null);
   let openerElement: HTMLElement | null = null;
   let accessibilityOpen = $state(false);
+  let mobileNavigationOpen = $state(false);
   let highContrast = $state(false);
   let reducedMotion = $state(false);
   let textSize = $state<'normal' | 'large' | 'xlarge'>('normal');
@@ -169,11 +173,15 @@
   let overviewAlerts = $derived(Object.entries(inferenceByCamera).flatMap(([cameraId, result]) =>
     (result.alerts ?? []).map((item) => ({ ...item, camera: item.camera ?? cameraId }))
   ));
-  let recentOverviewDetections = $derived([...(dashboardDetections.length ? dashboardDetections : overviewDetections)].sort((left, right) => {
+  let recentOverviewDetections = $derived(cameras.flatMap((item) => {
+    const result = inferenceByCamera[item.id];
+    const detection = result?.source?.latest_result ?? result?.latestDetection ?? null;
+    return detection ? [{ ...detection, camera: detection.camera ?? item.id }] : [];
+  }).sort((left, right) => {
     const leftTime = new Date(left.fecha_hora ?? left.created_at ?? 0).getTime();
     const rightTime = new Date(right.fecha_hora ?? right.created_at ?? 0).getTime();
     return rightTime - leftTime;
-  }).slice(0, 3));
+  }).slice(0, 6));
   let todayKey = $derived(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date()));
   let todayDetections = $derived(overviewDetections.filter((d) => {
     const value = d.fecha_hora ?? d.created_at;
@@ -184,15 +192,12 @@
   let activeAlerts = $derived(activeAlertsSummary.filter((alert) => String(alert.status ?? '').toLowerCase() === 'active'));
   let cameraCoverage = $derived(cameras.length ? Math.round((activeTransmissionCount / cameras.length) * 100) : 0);
   let attentionCameras = $derived(cameras.filter((item) => !cameraIsOnline(item.id)));
-  let dashboardSamples = $derived(dashboardDetections.length ? dashboardDetections : overviewDetections);
-  let todayDashboardSamples = $derived(dashboardSamples.filter((detection) => peruDateKey(detection.fecha_hora ?? detection.created_at) === todayKey));
   let detectionDistribution = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const detection of todayDashboardSamples) {
-      const name = labelClass(detection.clase ?? detection.class_name);
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 5);
+    return Object.entries(dashboardSummary?.by_class ?? {})
+      .filter(([name]) => name.toLowerCase() !== 'normal')
+      .map(([name, count]) => [labelClass(name), Number(count) || 0] as [string, number])
+      .filter(([, count]) => count > 0)
+      .sort((left, right) => right[1] - left[1]).slice(0, 5);
   });
   let distributionTotal = $derived(detectionDistribution.reduce((sum, [, count]) => sum + count, 0));
   let distributionGradient = $derived.by(() => {
@@ -207,8 +212,8 @@
     }).join(', ');
   });
   let hourlyActivity = $derived.by(() => Array.from({ length: 24 }, (_, hour) => {
-    const count = todayDashboardSamples.filter((detection) => peruHour(detection.fecha_hora ?? detection.created_at) === hour).length;
-    return { hour, count };
+    const entry = dashboardSummary?.by_hour?.find((item) => Number(item.hour) === hour);
+    return { hour, count: Number(entry?.anomalies ?? entry?.total ?? 0) || 0 };
   }));
   let hourlyMaximum = $derived(Math.max(1, ...hourlyActivity.map((item) => item.count)));
   let alertPageCount = $derived(Math.max(1, Math.ceil((alertTotal ?? allAlerts.length) / ALERT_PAGE_SIZE)));
@@ -314,14 +319,14 @@
     finally { detectionsLoading = false; }
   }
   async function loadDashboardAnalytics(options: { force?: boolean } = {}) {
-    const cached = options.force ? null : readOperationalCache<DetectionListResponse>(DASHBOARD_DETECTIONS_CACHE_KEY);
-    if (cached) { dashboardDetections = cached.items ?? []; dashboardDetectionTotal = cached.total ?? null; return; }
+    const cached = options.force ? null : readOperationalCache<DetectionSummary>(DASHBOARD_DETECTIONS_CACHE_KEY);
+    if (cached) { dashboardSummary = cached; dashboardDetectionTotal = Number(cached.total) || 0; return; }
     try {
-      const data = await getJSON<DetectionListResponse>('/api/detections?limit=100&offset=0');
-      dashboardDetections = data.items ?? [];
-      dashboardDetectionTotal = data.total ?? null;
+      const data = await getJSON<DetectionSummary>(`/api/detections/summary?date=${encodeURIComponent(todayKey)}`);
+      dashboardSummary = data;
+      dashboardDetectionTotal = Number(data.total) || 0;
       writeOperationalCache(DASHBOARD_DETECTIONS_CACHE_KEY, data);
-    } catch { dashboardDetections = []; dashboardDetectionTotal = null; }
+    } catch { dashboardSummary = null; dashboardDetections = []; dashboardDetectionTotal = null; }
     finally { dashboardAnalyticsLastRefresh = new Date(); }
   }
   async function refreshServiceLogs() {
@@ -532,6 +537,13 @@
     const d = toDate(value);
     return d ? d.toLocaleTimeString('es-PE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—';
   }
+  function recentDateLabel(value: unknown) {
+    const date = toDate(value);
+    if (!date) return 'Sin fecha';
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date());
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(date);
+    return day === today ? fmtTime(value) : fmtDate(value);
+  }
   function confidence(value: unknown) {
     const n = Number(value);
     return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '—';
@@ -634,7 +646,7 @@
 <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
 
 <div class="shell" class:a11y-high-contrast={highContrast} class:a11y-reduced-motion={reducedMotion} class:a11y-text-large={textSize === 'large'} class:a11y-text-xlarge={textSize === 'xlarge'} class:a11y-dyslexia={dyslexiaMode} class:a11y-letter-spacing={letterSpacing} class:a11y-aligned-text={alignedText}>
-  <aside class="sidebar" aria-label="Panel lateral">
+  <aside class="sidebar" class:mobile-open={mobileNavigationOpen} aria-label="Panel lateral">
     <a class="brand" href="/" aria-label="SentriX: ir al resumen general" onclick={(e) => { e.preventDefault(); go('overview'); }}>
       <span class="brand-emblem"><img src="/sentrix-logo-192.png" alt="" /></span>
       <span class="brand-lockup"><strong>Sentri<span>X</span></strong><small>Sistema de vigilancia inteligente</small></span>
@@ -642,19 +654,20 @@
     <div class="menu-label">ESPACIO DE TRABAJO</div>
     <nav aria-label="Navegación principal">
       {#each menu as item}
-        <button type="button" class:current={view === item.id} aria-current={view === item.id ? 'page' : undefined} aria-label={item.label} onclick={() => go(item.id)}>
-          <span class="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>
+        <button type="button" class:current={view === item.id} aria-current={view === item.id ? 'page' : undefined} aria-label={item.label} title={item.label} onclick={() => { mobileNavigationOpen = false; go(item.id); }}>
+          <span class="nav-icon" aria-hidden="true"><NavIcon kind={item.icon} /></span><span>{item.label}</span>
         </button>
       {/each}
     </nav>
     <div class="side-bottom">
-      <div class="system-state" role="status" aria-label={`Servicio de inferencia: ${aiReceiving ? 'procesando video' : aiConnected ? 'conectado sin recepción confirmada' : 'sin conexión'}`}><span class:live={aiReceiving} class="led" aria-hidden="true"></span><div><strong>Servicio de inferencia</strong><small>{aiReceiving ? 'Procesando video' : aiConnected ? 'Conectado · sin recepción confirmada' : 'Sin conexión'}</small></div></div>
+      <div class="system-state" role="status" aria-label={`Servicio de inferencia: ${aiConnected ? 'en línea' : 'no disponible'}`}><span class:live={aiConnected} class="led" aria-hidden="true"></span><div><strong>Servicio de inferencia</strong><small>{aiConnected ? 'En línea' : 'No disponible'}</small></div></div>
       <p>Prototipo académico · múltiples cámaras</p>
     </div>
   </aside>
 
   <div class="workspace">
     <header class="topbar">
+      <button class="mobile-nav-toggle" type="button" aria-label="Abrir menú de navegación" aria-expanded={mobileNavigationOpen} onclick={() => mobileNavigationOpen = !mobileNavigationOpen}><span aria-hidden="true">☰</span></button>
       <div class="breadcrumb">OPERACIONES <span>/</span> <strong>{menu.find((m) => m.id === view)?.label}</strong></div>
       <div class="topbar-right"><button class="accessibility-trigger" type="button" aria-expanded={accessibilityOpen} aria-controls="accessibility-panel" onclick={() => accessibilityOpen = !accessibilityOpen}><span class="accessibility-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle class="person-head" cx="24" cy="13" r="3.4"/><path d="M13 20.5c4.5 2.6 17.5 2.6 22 0M24 17v12m0 0-8 9m8-9 8 9"/></svg></span><span>Accesibilidad</span></button>{#if isAdmin}<a class="user-admin-link" href="/users">Usuarios</a>{/if}<span class="avatar" aria-label={authProfile?.display_name ?? 'Usuario'}>{authProfile?.display_name?.slice(0, 2).toUpperCase() ?? 'OP'}</span><span class="operator">{authProfile?.display_name && authProfile.display_name !== 'Operador' ? authProfile.display_name : authProfile?.role === 'admin' ? 'Administrador' : 'Operador'}</span><button class="sign-out" type="button" onclick={signOutAndRedirect}>Salir</button></div>
     </header>
@@ -683,8 +696,7 @@
           <h1>{menu.find((m) => m.id === view)?.label}</h1>
           <p class="subtitle">{view === 'overview' ? 'Una vista clara del estado de tu operación.' : view === 'monitor' ? (monitorExpanded ? 'Detalle de la fuente seleccionada y estado de su análisis.' : 'Vista simultánea de todas las fuentes de video registradas.') : view === 'cameras' ? 'Registro y control de las fuentes de video.' : view === 'detections' ? 'Clasificaciones producidas por el servidor de inferencia.' : 'Estado técnico de las conexiones y el procesamiento.'}</p>
         </div>
-        {#if view === 'overview'}<span class="demo-badge">Sesión de demostración</span>
-        {:else if view === 'cameras'}<button class="btn primary" onclick={showRegistration} disabled={loading}>+ Agregar cámara</button>
+        {#if view === 'cameras'}<button class="btn primary" onclick={showRegistration} disabled={loading}>+ Agregar cámara</button>
         {:else if view === 'monitor'}
           {#if monitorExpanded}<button class="btn secondary" onclick={() => monitorExpanded = false}>← Ver todas las cámaras</button>
           {:else}<span class="demo-badge">Vista simultánea</span>{/if}
@@ -698,31 +710,40 @@
 
       {#if view === 'overview'}
         <div class="overview-stats">
-          <button class="overview-stat" onclick={() => go('cameras')}><span class="stat-icon cameras" aria-hidden="true">▣</span><span>Cámaras registradas</span><div><strong>{cameras.length}</strong><i aria-hidden="true">↗</i></div><small>{activeCameraCount} en análisis actualmente</small><div class="stat-progress"><i style={`width:${cameras.length ? (activeCameraCount / cameras.length) * 100 : 0}%`}></i></div></button>
-          <button class="overview-stat" onclick={() => go('monitor')}><span class="stat-icon signal" aria-hidden="true">◉</span><span>Señal disponible</span><div><strong>{activeTransmissionCount}</strong><i aria-hidden="true">↗</i></div><small>{cameraCoverage}% de cobertura operativa</small><div class="stat-progress signal"><i style={`width:${cameraCoverage}%`}></i></div></button>
-          <button class="overview-stat" onclick={() => go('detections')}><span class="stat-icon detections" aria-hidden="true">⌁</span><span>Detecciones registradas</span><div><strong>{dashboardDetectionTotal ?? todayDetections.length}</strong><i aria-hidden="true">↗</i></div><small>{todayDetections.length} detecciones recibidas hoy</small><div class="stat-note">Ver historial completo →</div></button>
+          <button class="overview-stat" onclick={() => go('cameras')}><span class="stat-icon cameras" aria-hidden="true"><NavIcon kind="camera" /></span><span>Cámaras registradas</span><div><strong>{cameras.length}</strong><i aria-hidden="true">↗</i></div><small>{activeCameraCount} en análisis actualmente</small><div class="stat-note">Ver cámaras →</div></button>
+          <button class="overview-stat" onclick={() => go('monitor')}><span class="stat-icon signal" aria-hidden="true">◉</span><span>Señal disponible</span><div><strong>{activeTransmissionCount}</strong><i aria-hidden="true">↗</i></div><small>{cameraCoverage}% de cobertura operativa</small><div class="stat-note">Ver monitoreo →</div></button>
+          <button class="overview-stat" onclick={() => go('detections')}><span class="stat-icon detections" aria-hidden="true">⌁</span><span>Detecciones registradas</span><div><strong>{dashboardDetectionTotal ?? 0}</strong><i aria-hidden="true">↗</i></div><small>{dashboardDetectionTotal === null ? 'No fue posible consultar el resumen de hoy' : 'Detecciones recibidas hoy · horario de Lima'}</small><div class="stat-note">Ver historial completo →</div></button>
           <button class="overview-stat alert-card" onclick={() => go('alerts')}><span class="stat-icon alerts" aria-hidden="true">!</span><span>Alertas por revisar</span><div><strong>{activeAlerts.length}</strong><i aria-hidden="true">!</i></div><small>{activeAlerts.length ? 'Requieren revisión del operador' : 'No hay incidentes activos'}</small><div class="stat-note">Ir a eventos →</div></button>
         </div>
+
+        <section class="surface attention-panel overview-priority">
+          <div class="overview-section-head"><div><h2>Atención prioritaria</h2><p>Eventos activos y fuentes que requieren revisión.</p></div><button class="text-btn" onclick={() => go(activeAlerts.length ? 'alerts' : 'cameras')}>Ver todo →</button></div>
+          {#if activeAlerts.length}
+            <div class="attention-list">{#each activeAlerts.slice(0, 3) as alert, index (alert.id ?? `${alert.camera}-${index}`)}<button onclick={() => go('alerts')}><span class="attention-mark">!</span><span><strong>{labelClass(alert.clase)}</strong><small>{alert.camera ?? 'Cámara no identificada'} · {fmtTime(alert.timestamp_inicio ?? alert.fecha_hora)}</small></span><span class="attention-chevron">→</span></button>{/each}</div>
+          {:else if attentionCameras.length}
+            <div class="attention-list">{#each attentionCameras.slice(0, 3) as item (item.id)}<button onclick={() => { selectedId = item.id; go('monitor'); }}><span class="attention-mark muted">◌</span><span><strong>{cameraLabel(item)}</strong><small>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</small></span><span class="attention-chevron">→</span></button>{/each}</div>
+          {:else}<div class="attention-empty"><span aria-hidden="true">✓</span><strong>Todo en orden</strong><p>No hay alertas activas ni cámaras sin señal.</p></div>{/if}
+        </section>
 
         <div class="overview-workspace">
           <section class="surface recent-activity">
             <div class="overview-section-head"><div><h2>Actividad reciente</h2><p>Último resultado recibido por cada fuente.</p></div><button class="btn secondary" onclick={() => go('detections')}>Ver detecciones →</button></div>
             <div class="activity-list">
               {#each recentOverviewDetections as detection, index (detection.id ?? `${detection.fecha_hora}-${index}`)}
-                <button class="activity-row" onclick={() => go('detections')}><time>{fmtTime(detection.fecha_hora ?? detection.created_at)}</time><span class="activity-symbol" aria-hidden="true">⌁</span><span><strong>{labelClass(detection.clase ?? detection.class_name)}</strong><small>{detection.camera ?? 'Cámara no identificada'}</small></span><em>{confidence(detection.confianza)}</em></button>
+                <button class="activity-row" onclick={() => go('detections')}><time>{recentDateLabel(detection.fecha_hora ?? detection.created_at)}</time><span class="activity-symbol" aria-hidden="true">⌁</span><span><strong>{labelClass(detection.clase ?? detection.class_name)}</strong><small>{detection.camera ?? 'Cámara no identificada'}</small></span><em>{confidence(detection.confianza)}</em></button>
               {:else}<div class="overview-empty">Aún no hay resultados recientes. Cuando una fuente procese video, aparecerá aquí.</div>{/each}
             </div>
           </section>
           <div class="overview-analytics">
             <section class="surface distribution-card">
-              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Hoy · últimas 100 disponibles</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              <div class="overview-section-head"><div><h2>Detecciones por tipo</h2><p>Incidencias detectadas hoy · sin clasificaciones normales</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
               {#if distributionTotal}
                 <div class="distribution-content"><div class="donut" style={`background:conic-gradient(${distributionGradient})`}><div><strong>{distributionTotal}</strong><span>registros</span></div></div><div class="distribution-legend">{#each detectionDistribution as [type, count], index (type)}<div><i class={`legend-${index}`}></i><span>{type}</span><strong>{count}</strong></div>{/each}</div></div>
-              {:else}<div class="chart-empty">Aún no hay detecciones recientes para clasificar.</div>{/if}
+              {:else}<div class="chart-empty">Aún no hay incidencias de hoy para clasificar.</div>{/if}
             </section>
             <section class="surface hourly-card">
-              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Hoy · horario de Lima</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
-              {#if todayDashboardSamples.length}<div class="hour-chart" aria-label="Actividad de detecciones por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} detecciones`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay detecciones de hoy para graficar.</div>{/if}
+              <div class="overview-section-head"><div><h2>Actividad por hora</h2><p>Incidencias por hora · horario de Lima</p></div><button class="text-btn" onclick={() => go('detections')}>Ver →</button></div>
+              {#if dashboardSummary}<div class="hour-chart" aria-label="Actividad de incidencias por hora">{#each hourlyActivity as item (item.hour)}<div class="hour-bar"><span title={`${item.hour}:00 — ${item.count} incidencias`} style={`height:${Math.max(4, (item.count / hourlyMaximum) * 100)}%`}></span>{#if item.hour % 3 === 0}<small>{String(item.hour).padStart(2, '0')}</small>{/if}</div>{/each}</div>{:else}<div class="chart-empty">Aún no hay detecciones de hoy para graficar.</div>{/if}
             </section>
           </div>
         </div>
@@ -732,18 +753,10 @@
             <h2>Estado del sistema</h2>
             <div class="system-overview-list">
               <div><span>Motor de inferencia</span><strong class:offline={!aiConnected}><i></i>{aiConnected ? 'En línea' : 'No disponible'}</strong></div>
-              <div><span>Fuente de video</span><strong class:offline={!sourceAvailable && !selectedPlaybackReady && !isPending(source)} class:waiting={isPending(source) && !selectedPlaybackReady}><i></i>{selectedPlaybackReady || sourceAvailable ? 'Disponible' : isPending(source) ? 'Esperando conexión de video' : sourceStatusLabel(source, aiConnected)}</strong></div>
-              <div><span>Procesamiento de video</span><strong class:offline={!aiReceiving && !isPending(source)} class:waiting={isPending(source)}><i></i>{isPending(source) ? sourceWorkerLabel(source) || 'Esperando procesamiento' : aiReceiving ? sourceWorkerLabel(source) || 'Operativo' : sourceStatusLabel(source, aiConnected)}</strong></div>
+              <div><span>Fuentes de video</span><strong class:offline={!activeTransmissionCount && cameras.length > 0}><i></i>{activeTransmissionCount} de {cameras.length} disponibles</strong></div>
+              <div><span>Procesamiento de video</span><strong class:offline={!activeCameraCount && cameras.length > 0}><i></i>{activeCameraCount} de {cameras.length} en análisis</strong></div>
               <div><span>Actualización del panel</span><strong class:offline={!lastRefresh}><i></i>{lastRefresh ? 'Conectada' : 'Pendiente'}</strong></div>
             </div>
-          </section>
-          <section class="surface attention-panel">
-            <div class="overview-section-head"><div><h2>Atención prioritaria</h2><p>Eventos activos y fuentes que requieren revisión.</p></div><button class="text-btn" onclick={() => go(activeAlerts.length ? 'alerts' : 'cameras')}>Ver todo →</button></div>
-            {#if activeAlerts.length}
-              <div class="attention-list">{#each activeAlerts.slice(0, 3) as alert, index (alert.id ?? `${alert.camera}-${index}`)}<button onclick={() => go('alerts')}><span class="attention-mark">!</span><span><strong>{labelClass(alert.clase)}</strong><small>{alert.camera ?? 'Cámara no identificada'} · {fmtTime(alert.timestamp_inicio ?? alert.fecha_hora)}</small></span><span class="attention-chevron">→</span></button>{/each}</div>
-            {:else if attentionCameras.length}
-              <div class="attention-list">{#each attentionCameras.slice(0, 3) as item (item.id)}<button onclick={() => { selectedId = item.id; go('monitor'); }}><span class="attention-mark muted">◌</span><span><strong>{cameraLabel(item)}</strong><small>{sourceStatusLabel(inferenceByCamera[item.id]?.source, inferenceByCamera[item.id]?.available)}</small></span><span class="attention-chevron">→</span></button>{/each}</div>
-            {:else}<div class="attention-empty"><span aria-hidden="true">✓</span><strong>Todo en orden</strong><p>No hay alertas activas ni cámaras sin señal.</p></div>{/if}
           </section>
         </div>
 
@@ -955,11 +968,11 @@
   .demo-badge{align-self:flex-start;padding:10px 13px;border:1px solid #d5e1ec;border-radius:6px;background:#eef3f8;color:#506d89;font-size:12px}
   .overview-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;margin-bottom:24px}
   .overview-stat{position:relative;min-height:205px;padding:21px;background:#fff;border:1px solid var(--sx-line);border-radius:13px;box-shadow:0 3px 12px #06275a08;text-align:left;color:var(--sx-ink);overflow:hidden}
-  .overview-stat:hover{border-color:#b8cde2;box-shadow:0 8px 24px #06275a0d}.overview-stat>span:not(.stat-icon){display:block;color:#45637e;font-size:12px;font-weight:750;margin:12px 0 10px}.stat-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:#e7f0fd;color:#1470d1;font-size:19px}.stat-icon.signal{background:#e5f7f2;color:#108b76}.stat-icon.detections{background:#e8f4fd;color:#1988c5}.stat-icon.alerts{background:#fff0e7;color:#c77737;font-weight:850}.overview-stat>div:not(.stat-progress):not(.stat-note){display:flex;align-items:center;justify-content:space-between}.overview-stat strong{font-size:35px;line-height:1;font-weight:780;letter-spacing:-1px}.overview-stat>div>i{display:grid;place-items:center;width:31px;height:31px;border-radius:8px;background:#eef5fb;color:#3f759f;font-size:15px;font-style:normal}.overview-stat small{display:block;min-height:28px;margin-top:9px;color:#768da4;font-size:10px;line-height:1.35}.stat-progress{height:5px;margin-top:10px;border-radius:10px;background:#e8eef5;overflow:hidden}.stat-progress i{display:block;height:100%;border-radius:inherit;background:#1a74d4}.stat-progress.signal i{background:#16a389}.stat-note{margin-top:13px;color:#2b6da9;font-size:10px;font-weight:750}.overview-stat.alert-card strong{color:#a86528}
+  .overview-stat:hover{border-color:#b8cde2;box-shadow:0 8px 24px #06275a0d}.overview-stat>span:not(.stat-icon){display:block;color:#45637e;font-size:12px;font-weight:750;margin:12px 0 10px}.stat-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:#e7f0fd;color:#1470d1;font-size:19px}.stat-icon.signal{background:#e5f7f2;color:#108b76}.stat-icon.detections{background:#e8f4fd;color:#1988c5}.stat-icon.alerts{background:#fff0e7;color:#c77737;font-weight:850}.overview-stat>div:not(.stat-note){display:flex;align-items:center;justify-content:space-between}.overview-stat strong{font-size:35px;line-height:1;font-weight:780;letter-spacing:-1px}.overview-stat>div>i{display:grid;place-items:center;width:31px;height:31px;border-radius:8px;background:#eef5fb;color:#3f759f;font-size:15px;font-style:normal}.overview-stat small{display:block;min-height:28px;margin-top:9px;color:#768da4;font-size:10px;line-height:1.35}.stat-note{margin-top:13px;color:#2b6da9;font-size:10px;font-weight:750}.overview-stat.alert-card strong{color:#a86528}
   .overview-workspace{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);gap:22px;margin-bottom:25px}.recent-activity,.attention-panel,.distribution-card,.hourly-card{padding:24px;border-radius:13px}.overview-analytics{display:grid;gap:22px;align-content:start}.overview-section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.overview-section-head h2,.system-overview h2{margin:0;color:var(--sx-ink);font-size:16px}.overview-section-head p{margin:5px 0 0;color:#71879d;font-size:11px}.overview-section-head .btn{padding:9px 12px;font-size:11px}.activity-list{display:flex;flex-direction:column}.activity-row{display:grid;grid-template-columns:55px 33px minmax(0,1fr) auto;align-items:center;gap:11px;width:100%;padding:12px 5px;border:0;border-top:1px solid #eaf0f5;background:transparent;text-align:left}.activity-row:first-child{border-top:0}.activity-row:hover{background:#f7fbff}.activity-row time{color:#678097;font-size:11px;font-variant-numeric:tabular-nums}.activity-symbol{display:grid;place-items:center;width:29px;height:29px;border-radius:8px;background:#e8f4fd;color:#2087c0;font-size:16px}.activity-row strong,.activity-row small{display:block}.activity-row strong{color:#254d74;font-size:12px;text-transform:capitalize}.activity-row small{margin-top:3px;color:#7890a6;font-size:10px}.activity-row em{color:#14856e;font-size:11px;font-style:normal;font-weight:800}.overview-empty{text-align:center;color:#8194a8!important;padding:38px!important}.distribution-content{display:flex;align-items:center;gap:24px;min-height:148px}.donut{position:relative;display:grid;place-items:center;flex:0 0 132px;width:132px;height:132px;border-radius:50%}.donut:before{content:"";position:absolute;inset:24px;border-radius:50%;background:#fff}.donut>div{position:relative;text-align:center}.donut strong,.donut span{display:block}.donut strong{color:#183e66;font-size:26px;letter-spacing:-1px}.donut span{margin-top:2px;color:#7890a6;font-size:9px}.distribution-legend{display:grid;flex:1;gap:8px}.distribution-legend>div{display:grid;grid-template-columns:9px minmax(0,1fr) auto;gap:7px;align-items:center;color:#607a93;font-size:10px}.distribution-legend i{width:8px;height:8px;border-radius:50%;background:#1477db}.distribution-legend i.legend-1{background:#12a9cf}.distribution-legend i.legend-2{background:#3472bd}.distribution-legend i.legend-3{background:#efaa43}.distribution-legend i.legend-4{background:#72869b}.distribution-legend strong{color:#315674;font-size:11px}.hour-chart{display:grid;grid-template-columns:repeat(24,minmax(0,1fr));align-items:end;gap:4px;height:115px;padding:7px 2px 20px;border-bottom:1px solid #dce7f0}.hour-bar{position:relative;display:flex;align-items:end;height:100%}.hour-bar span{display:block;width:100%;min-height:3px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,#43a7f2,#1477db)}.hour-bar small{position:absolute;top:calc(100% + 5px);left:50%;color:#7890a6;font-size:8px;transform:translateX(-50%)}.chart-empty{display:grid;place-items:center;min-height:138px;border:1px dashed #d7e2ec;border-radius:8px;color:#758ba1;font-size:11px;text-align:center;padding:15px}.attention-list{display:flex;flex-direction:column}.attention-list button{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;width:100%;padding:12px 0;border:0;border-top:1px solid #eaf0f5;background:transparent;text-align:left}.attention-list button:first-child{border-top:0}.attention-list button:hover strong{color:#0870c4}.attention-mark{display:grid;place-items:center;width:27px;height:27px;border-radius:8px;background:#fff0e8;color:#c97636;font-size:14px;font-weight:850}.attention-mark.muted{background:#edf3f8;color:#748ca2}.attention-list strong,.attention-list small{display:block}.attention-list strong{color:#294e71;font-size:11px;text-transform:capitalize}.attention-list small{overflow:hidden;margin-top:3px;color:#7890a6;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.attention-chevron{color:#6b8aa3;font-size:14px}.attention-empty{text-align:center;padding:24px 5px;color:#71879d}.attention-empty>span{display:grid;place-items:center;width:38px;height:38px;margin:0 auto 9px;border-radius:50%;background:#e6f7f1;color:#10866f;font-size:19px;font-weight:800}.attention-empty strong{display:block;color:#275373;font-size:13px}.attention-empty p{margin:5px 0 0;font-size:11px;line-height:1.45}
-  .overview-bottom{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,1fr);gap:26px}.overview-bottom>.surface{border-radius:13px;padding:30px}
+  .overview-priority{margin:0 0 25px;padding:20px 24px}.overview-bottom{display:grid;grid-template-columns:1fr;gap:26px}.overview-bottom>.surface{border-radius:13px;padding:30px}
   .system-overview-list{margin-top:26px}.system-overview-list>div{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:17px 0;border-bottom:1px solid #e7edf3;font-size:14px}.system-overview-list>div:last-child{border-bottom:0}
-  .system-overview-list strong{display:flex;align-items:center;gap:10px;color:#08705f;font-size:13px}.system-overview-list strong i{width:7px;height:7px;border-radius:50%;background:currentColor}.system-overview-list strong.offline{color:#a65255}.system-overview-list strong.waiting{color:#916000}
+  .system-overview-list strong{display:flex;align-items:center;gap:10px;color:#08705f;font-size:13px}.system-overview-list strong i{width:7px;height:7px;border-radius:50%;background:currentColor}.system-overview-list strong.offline{color:#a65255}
 
   @media(max-width:1200px){.overview-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.camera-wall{gap:18px}}
   @media(max-width:1050px){.brand{width:72px;padding:8px;justify-content:center}.brand-emblem{width:52px;height:58px;flex-basis:52px}.brand-emblem img{width:96px;height:96px;left:-22px;top:-6px}.brand-lockup{display:none}}
@@ -995,6 +1008,12 @@
   footer { color:#4a6178; }
   .source-mark { color:#b9e7ff; }
   .stream-footer,.metric-list span,.prediction-confidence { color:#526b84; }
+  .mobile-nav-toggle{display:none;place-items:center;width:44px;height:44px;padding:0;border:1px solid #cddbea;border-radius:8px;background:#fff;color:#174b80;font-size:22px}
+  /* Densidad y legibilidad del resumen: texto secundario AA y controles táctiles. */
+  .overview-stat small,.overview-section-head p,.activity-row time,.activity-row small,.distribution-legend>div,.donut span,.hour-bar small,.chart-empty,.attention-list small,.attention-empty{color:#52677d;font-size:12px}
+  .stat-note{font-size:12px}.overview-section-head .btn,.text-btn{min-height:44px}.overview-empty{padding:24px!important;color:#52677d!important}.activity-row{grid-template-columns:130px 33px minmax(0,1fr) auto}.activity-row strong,.attention-list strong{font-size:13px}.activity-row em{font-size:12px}.attention-list button{min-height:44px}
+  @media(max-width:580px){.overview-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.overview-stat{min-height:164px;padding:16px}.overview-stat strong{font-size:29px}.activity-row{grid-template-columns:76px 30px minmax(0,1fr);gap:8px}.activity-row em{display:none}.activity-row time{font-size:10px}}
+  @media(max-width:700px){.sidebar{display:none;position:fixed;z-index:80;inset:0 auto 0 0;width:min(280px,82vw);height:100dvh;padding-top:76px;box-shadow:16px 0 38px #041b4370}.sidebar.mobile-open{display:flex}.brand{position:absolute;width:100%}.mobile-nav-toggle{display:grid}.topbar{justify-content:space-between}.topbar-right{gap:7px}.topbar-right .operator{display:none}.topbar-right .avatar{display:none}.accessibility-trigger{margin-left:auto}main{padding-left:16px;padding-right:16px}}
   .filters label,.log-filters label { color:#294b6a; }
   .overview-stat>span { color:#4a6178; }
   .overview-empty { color:#4a6178 !important; }
