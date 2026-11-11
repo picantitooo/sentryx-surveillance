@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { getClerk, getSessionToken, signOutAndRedirect } from '../lib/auth/clerk-client.js';
-  import AlertsView from '../lib/presentation/components/alerts/AlertsView.svelte';
-  import AlertDetailDialog from '../lib/presentation/components/alerts/AlertDetailDialog.svelte';
   import NavIcon from '../lib/presentation/components/ui/NavIcon.svelte';
   import {
     hasVideoSignal,
@@ -31,6 +29,7 @@
   interface ServiceLogsResponse { logs?: ServiceLog[]; total?: number; }
   interface ErrorPayload { error?: string; }
   interface AuthProfile { id: string; clerk_user_id: string; email: string; display_name?: string | null; role: 'admin' | 'operator'; is_active: boolean; }
+  type AuthBlockKind = 'none' | 'network' | 'account' | 'configuration';
 
   const DEFAULT_URL = '';
   // Historiales por sesión: evita consultas repetidas al cambiar de vista.
@@ -64,7 +63,9 @@
   let formError = $state('');
   let authProfile = $state<AuthProfile | null>(null);
   let authBlocked = $state('');
+  let authBlockedKind = $state<AuthBlockKind>('none');
   let authReady = $state(false);
+  let runAuthentication: (() => Promise<void>) | null = null;
   let showPlayer = $state(true);
   let monitorExpanded = $state(false);
   let monitorPage = $state(1);
@@ -95,6 +96,8 @@
   const ALERT_PAGE_SIZE = 8;
   let alertTotal = $state<number | null>(null);
   let selectedAlert = $state<Alert | null>(null);
+  let AlertsViewComponent = $state<any>(null);
+  let AlertDetailDialogComponent = $state<any>(null);
   let clip = $state<ClipResponse | null>(null);
   let clipLoading = $state(false);
   let clipError = $state('');
@@ -244,8 +247,27 @@
       await signOutAndRedirect();
       throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
     }
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(data.error || `HTTP ${response.status}`) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
     return data;
+  }
+  const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  async function getAuthProfileWithRetry() {
+    let lastError: unknown;
+    for (const delay of [0, 1_000, 3_000]) {
+      if (delay) await wait(delay);
+      try { return await getJSON<AuthProfile>('/api/auth/me'); }
+      catch (reason) {
+        lastError = reason;
+        // Los errores HTTP informan una condición definitiva; solo se reintenta
+        // una desconexión temporal del navegador o la red.
+        if (!(reason instanceof TypeError)) throw reason;
+      }
+    }
+    throw lastError;
   }
   function readOperationalCache<T>(key: string): T | null {
     try {
@@ -382,7 +404,14 @@
       }
     } catch (e) { clipError = errorMessage(e); }
   }
+  async function ensureAlertsView() {
+    if (!AlertsViewComponent) AlertsViewComponent = (await import('../lib/presentation/components/alerts/AlertsView.svelte')).default;
+  }
+  async function ensureAlertDetailDialog() {
+    if (!AlertDetailDialogComponent) AlertDetailDialogComponent = (await import('../lib/presentation/components/alerts/AlertDetailDialog.svelte')).default;
+  }
   async function showAlertDetail(alert: Alert) {
+    await ensureAlertDetailDialog();
     stopClipPolling(); selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
     try {
       const detail = alert.id ? await getJSON<Alert>(`/api/alerts/${encodeURIComponent(alert.id)}`) : alert;
@@ -411,12 +440,27 @@
       alignedText = saved.alignedText === true;
     } catch { /* Las preferencias son opcionales. */ }
     const boot = async () => {
+      authBlocked = '';
+      authBlockedKind = 'none';
+      loading = true;
       try {
         const clerk = await getClerk();
-        if (!clerk) { authBlocked = 'El acceso seguro aún no está configurado. Configura PUBLIC_CLERK_PUBLISHABLE_KEY.'; loading = false; return; }
+        if (!clerk) { authBlocked = 'El acceso seguro aún no está configurado. Configura PUBLIC_CLERK_PUBLISHABLE_KEY.'; authBlockedKind = 'configuration'; loading = false; return; }
         if (!clerk.user) { window.location.replace('/sign-in'); return; }
-        try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
-        catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
+        try { authProfile = await getAuthProfileWithRetry(); }
+        catch (reason) {
+          if (!mounted) return;
+          const status = (reason as { status?: number })?.status;
+          if (reason instanceof TypeError) {
+            authBlocked = 'No se pudo conectar con el servicio. Revisa tu conexión e inténtalo nuevamente.';
+            authBlockedKind = 'network';
+          } else {
+            authBlocked = errorMessage(reason);
+            authBlockedKind = status === 401 || status === 403 ? 'account' : 'configuration';
+          }
+          loading = false;
+          return;
+        }
         authReady = true;
         await loadCamera();
         if (!mounted) return;
@@ -427,9 +471,11 @@
       } catch (reason) {
         if (!mounted) return;
         authBlocked = `No se pudo inicializar el acceso seguro. ${errorMessage(reason)}`;
+        authBlockedKind = 'configuration';
         loading = false;
       }
     };
+    runAuthentication = boot;
     void boot();
     const timer = setInterval(async () => {
       if (!mounted || !cameras.length || fetching) return;
@@ -440,7 +486,7 @@
         if (view === 'overview' && analyticsExpired) await loadDashboardAnalytics({ force: true });
       } finally { fetching = false; }
     }, MONITOR_POLL_INTERVAL_MS);
-    return () => { mounted = false; clearInterval(timer); };
+    return () => { mounted = false; runAuthentication = null; clearInterval(timer); };
   });
   function clearFeedback() { notice = ''; error = ''; formError = ''; }
   function validateCameraForm() {
@@ -598,7 +644,7 @@
     const itemSource = result?.source;
     return result?.available === true && hasVideoSignal(itemSource);
   }
-  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
+  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { void ensureAlertsView(); alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
     openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     clearFeedback(); editingCamera = null; name = ''; url = ''; modal = true;
@@ -644,6 +690,7 @@
     try { await signOutAndRedirect(); }
     catch { window.location.assign('/sign-in'); }
   }
+  function retryBlockedAuthentication() { void runAuthentication?.(); }
 </script>
 
 <svelte:head>
@@ -651,7 +698,7 @@
   <meta name="description" content="Monitoreo, detecciones y alertas de cámaras con MediaMTX y FastAPI" />
 </svelte:head>
 {#if authBlocked}
-  <main class="auth-gate"><section><img src="/sentrix-logo-192.png" alt="SentriX" /><h1>Acceso no disponible</h1><p>{authBlocked}</p><button type="button" onclick={leaveBlockedSession}>Cerrar sesión e intentar de nuevo</button></section></main>
+  <main class="auth-gate"><section><img src="/sentrix-logo-192.png" alt="SentriX" /><h1>Acceso no disponible</h1><p>{authBlocked}</p>{#if authBlockedKind === 'network'}<button type="button" onclick={retryBlockedAuthentication}>Reintentar</button>{:else if authBlockedKind === 'account'}<button type="button" onclick={leaveBlockedSession}>Cerrar sesión e intentar de nuevo</button>{/if}</section></main>
 {:else if !authReady}
   <main class="auth-gate" aria-live="polite"><section><img src="/sentrix-logo-192.png" alt="SentriX" /><h1>Verificando sesión</h1><p>Comprobando acceso seguro al panel…</p></section></main>
 {:else}
@@ -849,7 +896,9 @@
         </section>
 
       {:else if view === 'alerts'}
-        <AlertsView {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
+        {#if AlertsViewComponent}
+          <AlertsViewComponent {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
+        {:else}<div class="empty" role="status">Cargando eventos…</div>{/if}
 
       {:else if view === 'service'}
         <div class="stats performance-stats"><div class="stat"><small>Tiempo promedio</small><strong class="stat-word">{averageProcessingMs == null ? '—' : `${averageProcessingMs.toFixed(2)} ms`}</strong><span>{processingTimes.length} ejecuciones con tiempo registrado</span></div><div class="stat"><small>Tiempo mínimo</small><strong class="stat-word">{minimumProcessingMs == null ? '—' : `${minimumProcessingMs.toFixed(2)} ms`}</strong><span>Menor tiempo de los filtros actuales</span></div><div class="stat"><small>Tiempo máximo</small><strong class="stat-word">{maximumProcessingMs == null ? '—' : `${maximumProcessingMs.toFixed(2)} ms`}</strong><span>Mayor tiempo de los filtros actuales</span></div><div class="stat"><small>Errores registrados</small><strong>{filteredServiceLogs.filter((log) => String(log.level).toUpperCase() === 'ERROR').length}</strong><span>{filteredServiceLogs.length} registros visibles</span></div></div>
@@ -879,8 +928,8 @@
   </div>
 </div>
 
-{#if selectedAlert}
-  <AlertDetailDialog alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
+{#if selectedAlert && AlertDetailDialogComponent}
+  <AlertDetailDialogComponent alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
 {/if}
 {/if}
 
