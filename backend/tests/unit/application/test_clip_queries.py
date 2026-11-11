@@ -48,3 +48,19 @@ def test_unknown_alert_and_broken_storage():
 
     with pytest.raises(Unavailable):
         ClipQueries(Broken(), CLIPS).get("activa")
+
+
+def test_clip_left_open_by_a_dead_worker_is_reported_missing():
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    recent = datetime.now(timezone.utc).isoformat()
+    alerts = Rows({"huerfana": {"status": "interrupted"}, "subiendo": {"status": "closed"},
+                   "activa": {"status": "active"}})
+    clips = Rows({"huerfana": {"status": "recording", "updated_at": old},
+                  "subiendo": {"status": "uploading", "updated_at": recent},
+                  "activa": {"status": "recording", "updated_at": old}})
+    queries = ClipQueries(alerts, clips, Storage())
+    lost = queries.get("huerfana")
+    assert (lost["status"], lost["reason"], lost["url"]) == ("missing", "clip_abandoned", None)
+    assert queries.get("subiendo")["status"] == "recording"   # acaba de cerrar: sigue subiendo
+    assert queries.get("activa")["status"] == "recording"     # evento largo aún abierto

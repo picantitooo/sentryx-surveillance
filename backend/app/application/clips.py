@@ -1,9 +1,25 @@
 """Consulta del clip de una alerta para el panel."""
+from datetime import datetime, timezone
+
 from app.application.errors import NotFound, Unavailable
 
 # Estados del contrato con el panel: recording | ready | partial | missing.
 PUBLIC_STATUS = {"recording": "recording", "uploading": "recording", "ready": "ready", "partial": "partial",
                  "missing": "missing"}
+# Un clip sin cerrar mucho después de terminar su alerta quedó huérfano: su worker murió o fue destruido.
+ABANDONED_SECONDS = 1800
+
+
+def abandoned(alert, clip, now=None):
+    if alert["status"] == "active" or clip["status"] not in ("recording", "uploading") or not clip.get("updated_at"):
+        return False
+    try:
+        updated = datetime.fromisoformat(str(clip["updated_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return ((now or datetime.now(timezone.utc)) - updated).total_seconds() > ABANDONED_SECONDS
 
 
 class ClipQueries:
@@ -23,6 +39,10 @@ class ClipQueries:
             status = "recording" if alert["status"] == "active" else "missing"
             return {"alert_id": alert_id, "status": status, "url": None, "duration_seconds": None,
                     "size_bytes": None, "storage": None, "reason": None}
+        if abandoned(alert, clip):
+            # Sin esto el panel lo mostraría como "grabando" para siempre. Si el worker vuelve y lo sube, pasa a listo.
+            return {"alert_id": alert_id, "status": "missing", "url": None, "duration_seconds": None,
+                    "size_bytes": None, "storage": None, "reason": "clip_abandoned"}
         status = PUBLIC_STATUS[clip["status"]]
         url, storage = None, None
         if status in ("ready", "partial"):
