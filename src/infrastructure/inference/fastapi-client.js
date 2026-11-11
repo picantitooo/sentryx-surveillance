@@ -3,10 +3,10 @@ import { INFERENCE_API_URL, INFERENCE_API_KEY } from '$app/env/private';
 
 /**
  * @param {string} path
- * @param {{ method?: string, body?: unknown, timeoutMs?: number, retryOnTimeout?: boolean, authorization?: string | null }} [options]
+ * @param {{ method?: string, body?: unknown, timeoutMs?: number, retryOnTimeout?: boolean, authorization?: string | null, includeHeaders?: boolean }} [options]
  * @returns {Promise<any>}
  */
-export async function callInference(path, { method = 'GET', body, timeoutMs = 10_000, retryOnTimeout = true, authorization = null } = {}) {
+export async function callInference(path, { method = 'GET', body, timeoutMs = 10_000, retryOnTimeout = true, authorization = null, includeHeaders = false } = {}) {
   const base = INFERENCE_API_URL?.replace(/\/$/, '');
   const key = INFERENCE_API_KEY;
   if (!base || (!authorization && !key)) {
@@ -30,7 +30,8 @@ export async function callInference(path, { method = 'GET', body, timeoutMs = 10
         : typeof data.detail === 'string' ? data.detail : `HTTP ${response.status}`;
       throw new Error(`FastAPI ${response.status}: ${detail}`);
     }
-    return data;
+    if (!includeHeaders) return data;
+    return { data, headers: Object.fromEntries(response.headers.entries()) };
   };
 
   try { return await request(timeoutMs); }
