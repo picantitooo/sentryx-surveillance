@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { normalizePlaybackUrl, streamPathFromPlaybackUrl } from '#domain/camera/camera.js';
 import { createServerServices } from '#presentation/server/server-services.js';
+import { requireAuthorization } from '#presentation/server/require-authorization.js';
 
 /** @param {unknown} error @param {string} fallback */
 function apiErrorMessage(error, fallback) {
@@ -17,6 +18,7 @@ function apiErrorStatus(error) {
 }
 
 export async function GET({ request }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
   const { cameraService } = createServerServices(request.headers.get('authorization'));
   try {
     return json({ cameras: await cameraService.list() });
@@ -27,6 +29,7 @@ export async function GET({ request }) {
 }
 
 export async function POST({ request }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
   const { cameraService } = createServerServices(request.headers.get('authorization'));
   const body = await request.json().catch(() => null);
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
@@ -49,6 +52,7 @@ export async function POST({ request }) {
 }
 
 export async function PUT({ request, url }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
   const { cameraService } = createServerServices(request.headers.get('authorization'));
   const id = url.searchParams.get('id')?.trim();
   const body = await request.json().catch(() => null);
@@ -69,6 +73,7 @@ export async function PUT({ request, url }) {
 }
 
 export async function DELETE({ url, request }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
   const { cameraService } = createServerServices(request.headers.get('authorization'));
   const id = url.searchParams.get('id')?.trim();
   if (!id) return json({ error: 'Falta el identificador de la cámara.' }, { status: 400 });
