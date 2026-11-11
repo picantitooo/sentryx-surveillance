@@ -57,6 +57,7 @@ class RemoteHybridPredictor:
             return {"model_loaded": False, "gpu_active": False, "policy": "hybrid", "inference": "remote",
                     "inference_reachable": False}
         return {"model_loaded": bool(remote.get("model_loaded")), "gpu_active": bool(remote.get("gpu_active")),
+                "model": remote.get("model"), "precision": remote.get("precision"),
                 "policy": "hybrid", "inference": "remote", "inference_reachable": True}
 
     def close(self):

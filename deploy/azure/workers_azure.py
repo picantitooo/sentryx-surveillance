@@ -65,7 +65,7 @@ def worker_env(name, capacity, pc_ip):
     missing = [key for key in ("SENTRIX_DATABASE_URL", "SENTRIX_CONTROL_API_KEY", "SENTRIX_CLIPS_BUCKET") if key not in env]
     if missing:
         raise SystemExit(f"Faltan en backend/.env: {missing}")
-    env.update({"SENTRIX_ROLE": "worker", "SENTRIX_WORKER_ID": f"sx-{name}", "SENTRIX_WORKER_CAPACITY": str(capacity),
+    env.update({"SENTRIX_COMMIT": commit(), "SENTRIX_ROLE": "worker", "SENTRIX_WORKER_ID": f"sx-{name}", "SENTRIX_WORKER_CAPACITY": str(capacity),
                 "SENTRIX_PREDICTOR": "hybrid", "SENTRIX_VIDEO_TRANSPORT": "rtsp", "SENTRIX_AUTH_MODE": "api_key",
                 "SENTRIX_INFERENCE_URL": f"http://{pc_ip}:{INFERENCE_PORT}"})
     return env

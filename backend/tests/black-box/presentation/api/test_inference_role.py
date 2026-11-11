@@ -1,5 +1,6 @@
 """Rol inference (modelos compartidos) y workers que le delegan la inferencia."""
 import base64
+import json
 
 import numpy as np
 import pytest
@@ -104,6 +105,10 @@ def test_worker_with_inference_url_uses_the_hybrid_without_loading_models(config
         health = client.get("/health").json()
         assert health["inference"] == "remote" and health["inference_reachable"] is False
         assert health["policy"] == "hybrid"
+        logged = app.state.log_store.list(event_type="pipeline_config")["items"]
+        config = json.loads(logged[0]["message"])
+        assert config["policy"] == "hybrid" and config["inference"] == "remote"
+        assert config["config"]["threshold"] > 0 and "127.0.0.1" not in logged[0]["message"]
     assert app.state.predictor is None
 
 

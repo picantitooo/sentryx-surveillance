@@ -48,6 +48,7 @@ class HybridProcessor:
             number, block = await session.buffer.queue.get()
             session.processing = True
             started = time.monotonic()
+            queue_ms = (started - block.get("created", started)) * 1000
             stage = "inference"
             inference_ms = None
             window_id = f"{session.id}:{number}"
@@ -72,7 +73,9 @@ class HybridProcessor:
                     image, frames = models.prepare_block(block)
                     feature, result = models.detect(image, features, context.config.rolling_features)
                     return feature, frames, result
+                detect_started = time.monotonic()
                 feature, frames, (score, hint, hint_probability) = await asyncio.to_thread(detect)
+                detect_ms, classify_ms = (time.monotonic() - detect_started) * 1000, 0.0
                 context.features.append(feature)
                 context.blocks.append(frames)
                 timestamp = block["timestamp"]
@@ -80,7 +83,9 @@ class HybridProcessor:
                 prediction = None
                 if decision["run_videomae"]:
                     clip = [frame for item in context.blocks for frame in item]
+                    classify_started = time.monotonic()
                     logits = await asyncio.to_thread(models.classify, clip)
+                    classify_ms = (time.monotonic() - classify_started) * 1000
                     probabilities, smoothed = context.policy.add_videomae(timestamp, logits)
                     winner = max(range(len(CLASS_NAMES)), key=lambda i: probabilities[i])
                     live, live_confidence = context.policy.live_class(smoothed)
@@ -95,10 +100,16 @@ class HybridProcessor:
                 if prediction is not None and runtime.detection_store is not None:
                     stage = "storage"
                     record = Prediction.model_validate({**prediction, "timestamp": timestamp, "simulated": False})
+                    storage_started = time.monotonic()
                     detection = await asyncio.to_thread(
                         runtime.detection_store.save, record.model_dump(exclude_none=True), session.source_id,
                         session_id=session.id, window_id=window_id)
-                    await runtime.log_event("inference_completed", "Inferencia de bloque completada",
+                    storage_ms = (time.monotonic() - storage_started) * 1000
+                    # Clase de VideoMAE, o Normal derivada del puntaje de VadCLIP sin ejecutar el clasificador.
+                    source = "videomae" if decision["run_videomae"] else "vadclip"
+                    await runtime.log_event("inference_completed", f"Inferencia de bloque completada · fuente {source} · "
+                        f"cola {queue_ms:.1f} ms · detección {detect_ms:.1f} ms · clasificación {classify_ms:.1f} ms · "
+                        f"guardado {storage_ms:.1f} ms",
                         session=session, window_id=window_id, inference_ms=inference_ms,
                         processing_ms=round((time.monotonic() - started) * 1000, 3), detection_id=detection["id"])
                 if session.id not in runtime.sessions:

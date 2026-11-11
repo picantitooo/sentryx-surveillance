@@ -1,6 +1,7 @@
 """TA-2 provisional: muestreo por tiempo de video y ventanas sin solapamiento."""
 import asyncio
 import math
+import time
 from dataclasses import dataclass
 
 
@@ -171,7 +172,7 @@ class HybridBuffer(WindowBuffer):
         if position == self.config.sampling_stride - 1 and self.first is not None and len(self.partial) == 4:
             self.created += 1
             block = (self.created, {"clip": self.first, "videomae": self.partial, "timestamp": timestamp,
-                                    "epoch": self.resets})
+                                    "epoch": self.resets, "created": time.monotonic()})
             self.partial = []
             self.first = None
             if self.queue.full():

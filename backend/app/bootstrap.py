@@ -1,4 +1,6 @@
 """API SentriX: VideoMAE CUDA por defecto y simulador explícito para pruebas."""
+import dataclasses
+import json
 import logging
 import asyncio
 import os
@@ -239,6 +241,14 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
                 logger.info("Modelo listo: %s", app.state.predictor.health())
                 await asyncio.to_thread(log_store.emit, "model_ready", "Modelo cargado y calentamiento completado",
                                         processing_ms=round((time.perf_counter()-started)*1000, 3))
+            if hybrid:
+                # Deja constancia de con qué versión y configuración se produjeron los resultados.
+                health = await asyncio.to_thread(app.state.predictor.health)
+                await asyncio.to_thread(log_store.emit, "pipeline_config", json.dumps(
+                    {"commit": os.getenv("SENTRIX_COMMIT"), "worker": worker_id, "policy": "hybrid",
+                     "inference": "remote" if remote_mode else "local", "model": health.get("model"),
+                     "precision": health.get("precision"), "config": dataclasses.asdict(hybrid_config)},
+                    ensure_ascii=False, sort_keys=True))
             if sources is not None:
                 await sources.refresh()
                 background.append(asyncio.create_task(sources.run()))

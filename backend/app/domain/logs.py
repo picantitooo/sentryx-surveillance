@@ -8,7 +8,7 @@ EventType = Literal["service_started", "service_stopped", "model_loading", "mode
                     "transport_error", "configuration_missing", "inference_completed",
                     "inference_error", "detection_storage_error", "window_discarded",
                     "alert_opened", "alert_closed", "alert_interrupted", "alert_storage_error",
-                    "source_assigned", "data_purged", "clips_purged", "user_provisioned",
+                    "source_assigned", "pipeline_config", "data_purged", "clips_purged", "user_provisioned",
                     "user_deleted", "user_invited", "user_role_changed", "user_status_changed",
                     "user_sync_conflict"]
 

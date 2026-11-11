@@ -112,10 +112,24 @@ def test_vadclip_opens_and_closes_the_alert_and_videomae_sets_the_class(configur
             assert session.latest_result["alert"]["active"] is False
             assert logs.list(event_type="alert_opened")["total"] == 1
             assert logs.list(event_type="alert_closed")["total"] == 1
+            messages = [row["message"] for row in logs.list(event_type="inference_completed", limit=100)["items"]]
+            assert any("fuente videomae" in m for m in messages) and any("fuente vadclip" in m for m in messages)
+            assert all(all(part in m for part in ("cola", "detección", "clasificación", "guardado")) for m in messages)
         finally:
             await stop(receiver, session, task)
 
     asyncio.run(exercise())
+
+
+def test_hybrid_block_records_when_it_was_created(configured):
+    from app.domain.hybrid import HybridConfig
+    from app.domain.pipeline import HybridBuffer
+
+    buffer = HybridBuffer(HybridConfig(queue_size=2))
+    for index in range(16):
+        buffer.push(index, index / 30)
+    _, block = buffer.queue.get_nowait()
+    assert block["created"] > 0
 
 
 def test_lost_block_while_closing_interrupts_at_the_vadclip_end(configured, tmp_path):

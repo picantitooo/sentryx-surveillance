@@ -94,6 +94,7 @@ class VideoMAEPredictor:
     def __init__(self, root=MODEL_ROOT, provider="cuda"):
         self.metadata = load_metadata(root)
         self.helpers = inference_helpers(root)
+        self.precision = "FP16" if Path(root).name == "fp16" else "FP32"
         model_path = root / self.metadata["onnx_file"]
         if not model_path.is_file() or not Path(str(model_path) + ".data").is_file():
             raise FileNotFoundError("Se requieren el modelo ONNX y sus pesos .onnx.data juntos")
@@ -139,4 +140,5 @@ class VideoMAEPredictor:
     def health(self):
         providers = self.session.get_providers()
         return {"model_loaded": True, "model": self.metadata["model_name"],
-                "providers": providers, "gpu_active": "CUDAExecutionProvider" in providers}
+                "precision": self.precision, "providers": providers,
+                "gpu_active": "CUDAExecutionProvider" in providers}
