@@ -10,7 +10,8 @@ import numpy as np
 
 from app.domain.pipeline import VideoMAEConfig
 
-MODEL_ROOT = Path(__file__).resolve().parents[4] / "modelo"
+# SENTRIX_MODEL_ROOT permite leer los pesos desde otra carpeta (p. ej. la versión FP16).
+MODEL_ROOT = Path(os.getenv("SENTRIX_MODEL_ROOT") or Path(__file__).resolve().parents[4] / "modelo")
 CLASS_NAMES = ["normal", "hurto", "robo", "agresion_fisica", "vandalismo"]
 DISPLAY_NAMES = ["Normal", "Hurto", "Robo", "Agresión física", "Vandalismo"]
 

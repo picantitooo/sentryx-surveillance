@@ -25,7 +25,42 @@ def test_concurrent_alert_open_and_disconnect(tmp_path):
     assert alerts.apply(opening, record) is None
     for event in alerts.list()["items"]:
         assert event["status"] == "interrupted"
-        assert event["timestamp_fin"] is None
+        # Solo existe la ventana de apertura: el evento termina ahí y dura 0 s.
+        assert event["timestamp_fin"] == 1
+        assert event["duracion_segundos"] == 0
+
+
+@pytest.mark.parametrize("by_camera", [False, True])
+def test_interrupted_alert_ends_at_last_saved_window(tmp_path, by_camera):
+    # Sin fin, el evento interrumpido no tendría desde dónde hasta dónde cortar su clip.
+    detections = DetectionStore(tmp_path / "events.db")
+    alerts = AlertStore(detections.path)
+    windows = [detections.save(dict(clase="Hurto", confianza=.9, timestamp=t, simulated=True),
+                               "cam", session_id="s") for t in (4.0, 6.13, 8.26)]
+    detections.save(dict(clase="Hurto", confianza=.9, timestamp=50, simulated=True), "cam", session_id="other")
+    alerts.apply(dict(alert=dict(started=True, ended=False, threshold=.5)), windows[1])
+    if by_camera:
+        assert alerts.interrupt_camera("cam", "worker_lost") == 1
+    else:
+        assert alerts.interrupt("s", "window_gap") == 1
+    event = alerts.list(status="interrupted")["items"][0]
+    assert event["timestamp_inicio"] == pytest.approx(6.13)
+    assert event["timestamp_fin"] == pytest.approx(8.26)
+    assert event["duracion_segundos"] == pytest.approx(2.13)
+    assert event["fecha_hora_fin"] is not None
+
+
+def test_window_gap_interruption_excludes_the_window_after_the_gap(tmp_path):
+    # El procesador guarda la ventana posterior al salto antes de interrumpir la alerta.
+    detections = DetectionStore(tmp_path / "events.db")
+    alerts = AlertStore(detections.path)
+    windows = [detections.save(dict(clase="Hurto", confianza=.9, timestamp=t, simulated=True),
+                               "cam", session_id="s") for t in (4.0, 6.13, 12.52)]
+    alerts.apply(dict(alert=dict(started=True, ended=False, threshold=.5)), windows[0])
+    assert alerts.interrupt("s", "window_gap", end_timestamp=6.13) == 1
+    event = alerts.list(status="interrupted")["items"][0]
+    assert event["timestamp_fin"] == pytest.approx(6.13)
+    assert event["duracion_segundos"] == pytest.approx(2.13)
 
 def test_schema_commits_before_writes_and_is_not_repeated(monkeypatch):
     import app.infrastructure.persistence.detections as module

@@ -35,6 +35,8 @@ class Session:
     processing_errors: int = 0
     processing: bool = False
     latest_result: dict | None = None
+    # Timestamp de la última ventana guardada que pasó por la política (fin de una alerta interrumpida).
+    last_window_timestamp: float | None = None
     last_error: str | None = None
     relay: MediaRelay = field(default_factory=MediaRelay)
     source_track: object = None
@@ -43,6 +45,9 @@ class Session:
     policy_epoch: int = 0
     last_policy_window: int = 0
     pending_alert_interruption: bool = False
+    active_alert: dict | None = None  # fila de la alerta abierta; solo cambia al abrir, cerrar o interrumpir
+    clip_recorder: object = None  # graba el clip del evento cuando el transporte lo permite (RTSP)
+    alert_end_hint: float | None = None  # híbrido: fin marcado por VadCLIP mientras espera la unión
 
     def snapshot(self):
         return {"session_id": self.id, "source_id": self.source_id,
@@ -89,9 +94,33 @@ class WebRTCReceiver:
                 kwargs.update(camera=session.source_id, session_id=session.id)
             await asyncio.to_thread(self.log_store.emit, event_type, message, **kwargs)
 
+    async def alert_opened(self, session, event):
+        """Gancho: se confirmó un evento. El receptor RTSP empieza su clip."""
+
+    async def alert_finished(self, session, alert_id, end_timestamp, *, complete, reason):
+        """Gancho: terminó un evento (cerrado o interrumpido)."""
+
     async def interrupt_alert(self, session, reason):
-        if self.alert_store is not None:
-            count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason)
+        alert, session.active_alert = session.active_alert, None
+        # Híbrido: si VadCLIP ya había soltado, el evento termina ahí y no en la última ventana.
+        hint = session.alert_end_hint
+        end = hint if hint is not None else session.last_window_timestamp
+        session.alert_end_hint = None
+        if alert is not None:
+            try:
+                await self.alert_finished(session, alert["id"], end, complete=False, reason=reason)
+            except Exception:
+                logger.exception("No se pudo cerrar el clip del evento interrumpido")
+        # Sin alerta abierta no se toca la base: bloquea la tabla para todas las cámaras y, si un hueco la
+        # dispara, la demora genera más huecos. Al desconectarse sí va, para cerrar la sesión.
+        if self.alert_store is not None and (alert is not None or reason == "source_disconnected"):
+            # El evento termina en la última ventana procesada antes del corte.
+            try:
+                count = await asyncio.to_thread(self.alert_store.interrupt, session.id, reason, end)
+            except Exception:
+                # Sigue abierta en la base: se conserva para reintentar en el siguiente hueco.
+                session.active_alert, session.alert_end_hint = alert, hint
+                raise
             if count:
                 await self.log_event("alert_interrupted", "Evento interrumpido: " + reason,
                                      session=session, level="WARNING")

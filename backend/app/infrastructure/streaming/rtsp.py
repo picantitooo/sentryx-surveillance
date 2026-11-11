@@ -41,6 +41,27 @@ def _next_frame(iterator):
         return None
 
 
+def _next_frame_list(iterator):
+    frame = _next_frame(iterator)
+    return None if frame is None else [frame]
+
+
+def _next_frames(packets, recorder):
+    """Lee paquetes hasta obtener frames; cada paquete pasa antes por el grabador de clips."""
+    while True:
+        packet = next(packets, None)
+        if packet is None:
+            return None
+        try:
+            recorder.push(packet)
+        except Exception as exc:
+            # Un fallo del clip no puede cortar el video ni la inferencia.
+            logger.warning("Grabación de clip con error: %s", type(exc).__name__)
+        frames = packet.decode()
+        if frames:
+            return frames
+
+
 async def _blocking(executor, function, *args, on_cancel=None, **kwargs):
     """Esperar operaciones nativas antes de cerrar; cancelar no detiene FFmpeg."""
     future = asyncio.get_running_loop().run_in_executor(
@@ -75,8 +96,9 @@ def _verify_rtsps_fingerprint(host: str, port: int, expected: str):
 
 
 class RTSPReceiver(WebRTCReceiver):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, clips=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.clips = clips
         self.protocol = os.getenv("SENTRIX_RTSP_PROTOCOL", "rtsp").strip().lower()
         self.host = os.environ.get("SENTRIX_RTSP_HOST", "184.194.94.182").strip()
         self.port = int(os.environ.get("SENTRIX_RTSP_PORT", "8554"))
@@ -85,7 +107,9 @@ class RTSPReceiver(WebRTCReceiver):
         self.fingerprint = os.environ.get("SENTRIX_RTSP_SHA256", "")
         if self.protocol not in ("rtsp", "rtsps"):
             raise ValueError("SENTRIX_RTSP_PROTOCOL debe ser rtsp o rtsps")
-        if not os.getenv("SENTRIX_CONTROL_API_KEY"):
+        # Con autenticación solo por Clerk la clave compartida ya no se usa.
+        if (os.getenv("SENTRIX_AUTH_MODE", "api_key").strip().lower() != "clerk"
+                and not os.getenv("SENTRIX_CONTROL_API_KEY")):
             raise ValueError("Configurar SENTRIX_CONTROL_API_KEY")
         if self.protocol == "rtsps" and not (self.password and self.fingerprint):
             raise ValueError("RTSPS requiere SENTRIX_RTSP_PASSWORD y SENTRIX_RTSP_SHA256")
@@ -163,15 +187,25 @@ class RTSPReceiver(WebRTCReceiver):
                 container = await _blocking(
                     executor, av.open, self._url(camera), options={"rtsp_transport": "tcp"},
                     timeout=(5.0, 5.0), on_cancel=lambda opened: opened.close())
-                iterator = await _blocking(executor, lambda: iter(container.decode(video=0)))
+                recorder = session.clip_recorder
+                if recorder is not None:
+                    # Con clips se leen paquetes (para copiarlos sin recodificar) y se decodifican aquí.
+                    video = container.streams.video[0]
+                    await _blocking(executor, recorder.configure, video)
+                    packets = await _blocking(executor, lambda: iter(container.demux(video)))
+                    read = partial(_next_frames, packets, recorder)
+                else:
+                    iterator = await _blocking(executor, lambda: iter(container.decode(video=0)))
+                    read = partial(_next_frame_list, iterator)
                 base_time = time.monotonic()
                 while session.id in self.sessions:
-                    frame = await _blocking(executor, _next_frame, iterator)
+                    frames = await _blocking(executor, read)
                     if session.id not in self.sessions:
                         return
-                    if frame is None:
+                    if frames is None:
                         raise ConnectionError("Fin de stream")
-                    self._accept_rtsp_frame(session, frame, base_time)
+                    for frame in frames:
+                        self._accept_rtsp_frame(session, frame, base_time)
                     if session.rtsp_status != "receiving":
                         session.rtsp_status = "receiving"
                         session.pc.connectionState = "connected"
@@ -183,6 +217,8 @@ class RTSPReceiver(WebRTCReceiver):
                 # No registrar URL, password ni excepciones que incluyan la URL.
                 logger.warning("%s temporalmente no disponible para %s: %s",
                                camera.protocol.upper(), session.source_id, type(exc).__name__)
+                # Un corte se registra una sola vez; los reintentos siguientes solo van al log local.
+                new_outage = getattr(session, "rtsp_status", None) != "reconnecting"
                 session.rtsp_status = "reconnecting"
                 session.pc.connectionState = "disconnected"
                 session.last_error = f"Error de conexion: {type(exc).__name__}"
@@ -208,8 +244,9 @@ class RTSPReceiver(WebRTCReceiver):
                     else:
                         session.pending_alert_interruption = False
                 session.latest_result = None
-                await self._log_transport_event("transport_error", f"Stream {camera.protocol.upper()} interrumpido; reintentando",
-                                     session=session, level="WARNING")
+                if new_outage:
+                    await self._log_transport_event("transport_error", f"Stream {camera.protocol.upper()} interrumpido; reintentando",
+                                         session=session, level="WARNING")
             finally:
                 if container is not None:
                     try:
@@ -220,6 +257,27 @@ class RTSPReceiver(WebRTCReceiver):
             if session.id in self.sessions:
                 await asyncio.sleep(3)
 
+    async def alert_opened(self, session, event):
+        if self.clips is None or session.clip_recorder is None:
+            return
+        await asyncio.to_thread(self.clips.begin, event["id"], session.source_id)
+        session.clip_recorder.start(event["id"], event["timestamp_inicio"])
+
+    async def alert_finished(self, session, alert_id, end_timestamp, *, complete, reason):
+        if session.clip_recorder is None:
+            return
+        if complete:
+            session.clip_recorder.stop(alert_id, end_timestamp)
+        else:
+            # Puede escribir el cierre del archivo: fuera del bucle de eventos.
+            await asyncio.to_thread(session.clip_recorder.interrupt, alert_id, reason)
+
+    async def close(self, session_id):
+        session = self.sessions.get(session_id)
+        await super().close(session_id)
+        if session is not None and session.clip_recorder is not None:
+            await asyncio.to_thread(session.clip_recorder.close)
+
     def open(self, camera):
         session = Session(
             pc=_RTSPPeer(), source_id=camera.source_id,
@@ -228,6 +286,8 @@ class RTSPReceiver(WebRTCReceiver):
         )
         session.rtsp_status = "connecting"
         session.camera_config = camera
+        if self.clips is not None and session.alert_policy is not None:
+            session.clip_recorder = self.clips.recorder(camera.source_id)
         self.sessions[session.id] = session
         self.spawn(session, self.process_windows(session))
         self.spawn(session, self._read_loop(session))

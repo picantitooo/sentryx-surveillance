@@ -64,6 +64,12 @@ htmlcov/
 *.onnx
 *.onnx.data
 
+# Despliegue: estado y configuración local de Terraform, huellas SSH
+/deploy/azure/terraform/.terraform/
+/deploy/azure/terraform/terraform.tfstate*
+/deploy/azure/terraform/terraform.tfvars
+/deploy/azure/.known_hosts
+
 # Reglas del frontend (main)
 node_modules/
 .svelte-kit/
