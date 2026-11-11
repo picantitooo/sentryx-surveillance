@@ -1,7 +1,10 @@
 import { json } from '@sveltejs/kit';
-import { alertService } from '#presentation/server/server-services.js';
+import { createServerServices } from '#presentation/server/server-services.js';
+import { requireAuthorization } from '#presentation/server/require-authorization.js';
 
-export async function GET({ params }) {
+export async function GET({ params, request }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
+  const { alertService } = createServerServices(request.headers.get('authorization'));
   try {
     return json(await alertService.getClip(params.id));
   } catch (error) {

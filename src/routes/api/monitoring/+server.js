@@ -1,8 +1,11 @@
 import { json } from '@sveltejs/kit';
 import { MonitoringUnavailableError } from '#application/monitoring/monitoring-service.js';
-import { monitoringService } from '#presentation/server/server-services.js';
+import { createServerServices } from '#presentation/server/server-services.js';
+import { requireAuthorization } from '#presentation/server/require-authorization.js';
 
-export async function GET() {
+export async function GET({ request }) {
+  const unauthorized = requireAuthorization(request); if (unauthorized) return unauthorized;
+  const { monitoringService } = createServerServices(request.headers.get('authorization'));
   try { return json(await monitoringService.getDashboardSnapshot()); }
   catch (error) {
     if (!(error instanceof MonitoringUnavailableError)) throw error;

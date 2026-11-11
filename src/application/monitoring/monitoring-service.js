@@ -16,11 +16,17 @@ export function createMonitoringService({ inferenceClient, cameraRegistry }) {
       catch (error) { throw new MonitoringUnavailableError(error instanceof Error ? error.message : String(error)); }
       const cameras = await cameraRegistry.list();
       try {
-        const [alertsPage, sourceEntries] = await Promise.all([
+        const [alertsPage, sourcesPayload] = await Promise.all([
           inferenceClient('/alerts?status=active&limit=100&offset=0'),
-          Promise.all(cameras.map(async (camera) => [camera.id, await inferenceClient(`/sources/${encodeURIComponent(camera.id)}/status`)]))
+          inferenceClient('/sources')
         ]);
-        return { available: health?.status === 'ok', health, alerts: alertsPage.items ?? [], sources: Object.fromEntries(sourceEntries) };
+    const values = Array.isArray(sourcesPayload) ? sourcesPayload : (sourcesPayload?.sources ?? sourcesPayload?.items ?? []);
+        const sources = Array.isArray(values)
+          ? Object.fromEntries(values.map((source) => [source.source_id ?? source.id, source]).filter(([id]) => typeof id === 'string'))
+          : values;
+        const workers = health?.rtsp?.workers;
+        const workerCount = Array.isArray(workers) ? workers.length : workers && typeof workers === 'object' ? Object.keys(workers).length : 0;
+        return { available: health?.status === 'ok' && workerCount > 0, health, alerts: alertsPage.items ?? [], sources };
       } catch (error) {
         return { available: health?.status === 'ok', health, alerts: [], sources: {}, error: error instanceof Error ? error.message : String(error) };
       }

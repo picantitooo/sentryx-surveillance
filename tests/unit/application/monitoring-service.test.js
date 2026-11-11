@@ -44,21 +44,22 @@ test('informa indisponibilidad cuando falla health', async () => {
   await assert.rejects(() => service.getSnapshot(null), MonitoringUnavailableError);
 });
 
-test('consulta salud y alertas una vez, y solo el estado por cada cámara', async () => {
+test('consulta salud, alertas y todas las fuentes una vez por ciclo', async () => {
   const calls = [];
   const service = createMonitoringService({
     inferenceClient: async (path) => {
       calls.push(path);
-      if (path === '/health') return { status: 'ok' };
+      if (path === '/health') return { status: 'ok', rtsp: { workers: { 'worker-1': {} } } };
       if (path.startsWith('/alerts')) return { items: [{ id: 'alerta-1', status: 'active' }] };
-      return { status: 'running', latest_result: { id: `latest-${path}`, clase: 'normal' } };
+      if (path === '/sources') return { sources: [{ source_id: 'camara1', status: 'running' }, { source_id: 'camara2', status: 'running' }] };
+      throw new Error(`ruta inesperada: ${path}`);
     },
     cameraRegistry: { list: async () => [{ id: 'camara1' }, { id: 'camara2' }], get: async () => null }
   });
   const result = await service.getDashboardSnapshot();
   assert.equal(calls.filter((path) => path === '/health').length, 1);
   assert.equal(calls.filter((path) => path.startsWith('/alerts')).length, 1);
-  assert.equal(calls.filter((path) => path.startsWith('/sources/')).length, 2);
+  assert.equal(calls.filter((path) => path === '/sources').length, 1);
   assert.equal(calls.some((path) => path.startsWith('/detections')), false);
   assert.equal(result.alerts.length, 1);
 });
