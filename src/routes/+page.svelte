@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { getClerk, getSessionToken, signOutAndRedirect } from '../lib/auth/clerk-client.js';
-  import AlertsView from '../lib/presentation/components/alerts/AlertsView.svelte';
-  import AlertDetailDialog from '../lib/presentation/components/alerts/AlertDetailDialog.svelte';
   import NavIcon from '../lib/presentation/components/ui/NavIcon.svelte';
   import {
     hasVideoSignal,
@@ -98,6 +96,8 @@
   const ALERT_PAGE_SIZE = 8;
   let alertTotal = $state<number | null>(null);
   let selectedAlert = $state<Alert | null>(null);
+  let AlertsViewComponent = $state<any>(null);
+  let AlertDetailDialogComponent = $state<any>(null);
   let clip = $state<ClipResponse | null>(null);
   let clipLoading = $state(false);
   let clipError = $state('');
@@ -404,7 +404,14 @@
       }
     } catch (e) { clipError = errorMessage(e); }
   }
+  async function ensureAlertsView() {
+    if (!AlertsViewComponent) AlertsViewComponent = (await import('../lib/presentation/components/alerts/AlertsView.svelte')).default;
+  }
+  async function ensureAlertDetailDialog() {
+    if (!AlertDetailDialogComponent) AlertDetailDialogComponent = (await import('../lib/presentation/components/alerts/AlertDetailDialog.svelte')).default;
+  }
   async function showAlertDetail(alert: Alert) {
+    await ensureAlertDetailDialog();
     stopClipPolling(); selectedAlert = alert; clip = null; clipError = ''; clipLoading = true;
     try {
       const detail = alert.id ? await getJSON<Alert>(`/api/alerts/${encodeURIComponent(alert.id)}`) : alert;
@@ -637,7 +644,7 @@
     const itemSource = result?.source;
     return result?.available === true && hasVideoSignal(itemSource);
   }
-  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
+  function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { void ensureAlertsView(); alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
     openerElement = event?.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     clearFeedback(); editingCamera = null; name = ''; url = ''; modal = true;
@@ -889,7 +896,9 @@
         </section>
 
       {:else if view === 'alerts'}
-        <AlertsView {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
+        {#if AlertsViewComponent}
+          <AlertsViewComponent {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
+        {:else}<div class="empty" role="status">Cargando eventos…</div>{/if}
 
       {:else if view === 'service'}
         <div class="stats performance-stats"><div class="stat"><small>Tiempo promedio</small><strong class="stat-word">{averageProcessingMs == null ? '—' : `${averageProcessingMs.toFixed(2)} ms`}</strong><span>{processingTimes.length} ejecuciones con tiempo registrado</span></div><div class="stat"><small>Tiempo mínimo</small><strong class="stat-word">{minimumProcessingMs == null ? '—' : `${minimumProcessingMs.toFixed(2)} ms`}</strong><span>Menor tiempo de los filtros actuales</span></div><div class="stat"><small>Tiempo máximo</small><strong class="stat-word">{maximumProcessingMs == null ? '—' : `${maximumProcessingMs.toFixed(2)} ms`}</strong><span>Mayor tiempo de los filtros actuales</span></div><div class="stat"><small>Errores registrados</small><strong>{filteredServiceLogs.filter((log) => String(log.level).toUpperCase() === 'ERROR').length}</strong><span>{filteredServiceLogs.length} registros visibles</span></div></div>
@@ -919,8 +928,8 @@
   </div>
 </div>
 
-{#if selectedAlert}
-  <AlertDetailDialog alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
+{#if selectedAlert && AlertDetailDialogComponent}
+  <AlertDetailDialogComponent alert={selectedAlert} {clip} loading={clipLoading} error={clipError} onClose={closeAlertDetail} formatDate={fmtDate} {duration} {labelClass} {statusLabel} />
 {/if}
 {/if}
 

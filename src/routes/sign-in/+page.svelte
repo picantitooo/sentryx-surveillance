@@ -32,12 +32,15 @@
   });
 </script>
 
-<svelte:head><title>Ingresar — SentriX</title></svelte:head>
+<svelte:head>
+  <title>Ingresar — SentriX</title>
+  <link rel="preload" as="image" href="/sentrix-logo.webp" fetchpriority="high" />
+</svelte:head>
 
 <main class="auth-page">
   <div class="visual-panel" aria-hidden="true"></div>
   <section class="auth-card" aria-label="Inicio de sesión SentriX">
-    <img class="form-logo" src="/sentrix-logo.webp" alt="SentriX" width="180" height="100" />
+    <img class="form-logo" src="/sentrix-logo.webp" alt="SentriX" width="180" height="100" loading="eager" fetchpriority="high" decoding="async" />
     <p class="intro">Ingresa con tu cuenta para acceder al monitoreo.</p>
     {#if error}<p class="error" role="alert">{error}</p>{:else}<div class="clerk-host" bind:this={host} aria-label="Formulario de inicio de sesión"></div>{/if}
   </section>

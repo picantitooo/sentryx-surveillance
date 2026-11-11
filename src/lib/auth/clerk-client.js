@@ -31,6 +31,17 @@ function loadScript(source, attributes = {}) {
   });
 }
 
+/** @param {string} domain */
+function preconnect(domain) {
+  const href = `https://${domain}`;
+  if (document.querySelector(`link[rel="preconnect"][href="${href}"]`)) return;
+  const link = document.createElement('link');
+  link.rel = 'preconnect';
+  link.href = href;
+  link.crossOrigin = 'anonymous';
+  document.head.appendChild(link);
+}
+
 /** @param {string} publishableKey */
 function clerkDomain(publishableKey) {
   try { return atob(publishableKey.split('_')[2]).slice(0, -1); }
@@ -49,8 +60,13 @@ export async function getClerk() {
       const { publishableKey = '' } = response.ok ? await response.json() : {};
       if (!publishableKey) return null;
       const domain = clerkDomain(publishableKey);
-      await loadScript(`https://${domain}/npm/@clerk/ui@1/dist/ui.browser.js`);
-      await loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': publishableKey });
+      preconnect(domain);
+      // Ambos recursos se requieren para Clerk, pero no dependen uno del otro
+      // durante su descarga. Se cargan en paralelo para eliminar un salto de red.
+      await Promise.all([
+        loadScript(`https://${domain}/npm/@clerk/ui@1/dist/ui.browser.js`),
+        loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': publishableKey })
+      ]);
       const clerk = /** @type {any} */ (window).Clerk;
       if (!clerk) throw new Error('Clerk no se pudo inicializar.');
       await clerk.load({
