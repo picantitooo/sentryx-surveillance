@@ -409,18 +409,24 @@
       alignedText = saved.alignedText === true;
     } catch { /* Las preferencias son opcionales. */ }
     const boot = async () => {
-      const clerk = await getClerk();
-      if (!clerk) { authBlocked = 'El acceso seguro aún no está configurado. Configura PUBLIC_CLERK_PUBLISHABLE_KEY.'; loading = false; return; }
-      if (!clerk.user) { window.location.replace('/sign-in'); return; }
-      try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
-      catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
-      authReady = true;
-      await loadCamera();
-      if (!mounted) return;
-      refreshAllInference();
-      loadDashboardAnalytics();
-      if (view === 'service') refreshServiceLogs();
-      if (view === 'detections') refreshDetections();
+      try {
+        const clerk = await getClerk();
+        if (!clerk) { authBlocked = 'El acceso seguro aún no está configurado. Configura PUBLIC_CLERK_PUBLISHABLE_KEY.'; loading = false; return; }
+        if (!clerk.user) { window.location.replace('/sign-in'); return; }
+        try { authProfile = await getJSON<AuthProfile>('/api/auth/me'); }
+        catch (reason) { authBlocked = errorMessage(reason); loading = false; return; }
+        authReady = true;
+        await loadCamera();
+        if (!mounted) return;
+        refreshAllInference();
+        loadDashboardAnalytics();
+        if (view === 'service') refreshServiceLogs();
+        if (view === 'detections') refreshDetections();
+      } catch (reason) {
+        if (!mounted) return;
+        authBlocked = `No se pudo inicializar el acceso seguro. ${errorMessage(reason)}`;
+        loading = false;
+      }
     };
     void boot();
     const timer = setInterval(async () => {

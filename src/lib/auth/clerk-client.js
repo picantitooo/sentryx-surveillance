@@ -43,7 +43,7 @@ export async function getClerk() {
   if (typeof window === 'undefined') return null;
   if (!clerkPromise) {
     clerkPromise = (async () => {
-      const response = await fetch('/api/auth/config');
+      const response = await fetch('/api/auth/config', { signal: AbortSignal.timeout(10_000) });
       const { publishableKey = '' } = response.ok ? await response.json() : {};
       if (!publishableKey) return null;
       const domain = clerkDomain(publishableKey);
@@ -53,7 +53,11 @@ export async function getClerk() {
       if (!clerk) throw new Error('Clerk no se pudo inicializar.');
       await clerk.load({ ui: { ClerkUI: /** @type {any} */ (window).__internal_ClerkUICtor } });
       return clerk;
-    })();
+    })().catch((error) => {
+      // Un fallo temporal de red o Clerk no debe bloquear los siguientes reintentos.
+      clerkPromise = null;
+      throw error;
+    });
   }
   return clerkPromise;
 }

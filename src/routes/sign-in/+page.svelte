@@ -8,21 +8,25 @@
   onMount(() => {
     /** @type {any} */ let clerk;
     void (async () => {
-    clerk = await getClerk();
-    if (!clerk) {
-      error = 'Falta configurar PUBLIC_CLERK_PUBLISHABLE_KEY para habilitar el acceso.';
-      return;
-    }
-    if (clerk.user) {
-      window.location.replace('/');
-      return;
-    }
-    clerk.mountSignIn(host, {
-      routing: 'hash',
-      withSignUp: false,
-      forceRedirectUrl: '/',
-      appearance: sentriXAppearance
-    });
+      try {
+        clerk = await getClerk();
+        if (!clerk) {
+          error = 'Falta configurar PUBLIC_CLERK_PUBLISHABLE_KEY para habilitar el acceso.';
+          return;
+        }
+        if (clerk.user) {
+          window.location.replace('/');
+          return;
+        }
+        clerk.mountSignIn(host, {
+          routing: 'hash',
+          withSignUp: false,
+          forceRedirectUrl: '/',
+          appearance: sentriXAppearance
+        });
+      } catch (reason) {
+        error = `No se pudo cargar el inicio de sesión. ${reason instanceof Error ? reason.message : String(reason)}`;
+      }
     })();
     return () => { if (clerk && host) clerk.unmountSignIn(host); };
   });
