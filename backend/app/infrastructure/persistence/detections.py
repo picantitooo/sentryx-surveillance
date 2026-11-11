@@ -86,3 +86,25 @@ class DetectionStore:
             return [self.decode(row) for row in rows]
         finally:
             connection.close()
+
+    def count(self, camera=None):
+        connection = self.connect()
+        try:
+            row = connection.execute(
+                "SELECT count(*) AS total FROM detections" + (" WHERE camera = ?" if camera is not None else ""),
+                (camera,) if camera is not None else ()).fetchone()
+            return int(row["total"])
+        finally:
+            connection.close()
+
+    def summary(self, start, end):
+        """Conteos de [start, end) por clase, cámara y hora UTC. Las fechas son texto ISO en UTC: se comparan por prefijo."""
+        connection = self.connect()
+        try:
+            rows = connection.execute(
+                "SELECT clase, camera, substr(fecha_hora, 12, 2) AS hora, count(*) AS total FROM detections "
+                "WHERE fecha_hora >= ? AND fecha_hora < ? GROUP BY clase, camera, substr(fecha_hora, 12, 2)",
+                (start, end)).fetchall()
+            return [(row["clase"], row["camera"], int(row["hora"]), int(row["total"])) for row in rows]
+        finally:
+            connection.close()

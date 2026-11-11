@@ -1,4 +1,5 @@
 """Health, inference and detection HTTP endpoints."""
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.domain.inference import Window, Prediction
 from app.presentation.http.security import require_admin
@@ -29,9 +30,16 @@ def inference_router(app, queries, receiver, inference_service, *, real_mode, se
         return prediction
 
     @router.get("/detections")
-    def list_detections(camera: str | None = None, limit: int = Query(100, ge=1, le=500),
+    def list_detections(response: Response, camera: str | None = None, limit: int = Query(100, ge=1, le=500),
                         offset: int = Query(0, ge=0)):
-        return queries.list(camera, limit, offset)
+        items = queries.list(camera, limit, offset)
+        # El cuerpo sigue siendo una lista; el total viaja en una cabecera para no romper a quien ya la consume.
+        response.headers["X-Total-Count"] = str(queries.count(camera))
+        return items
+
+    @router.get("/detections/summary", summary="Resumen de un día (hora de Lima) para el tablero")
+    def detections_summary(day: date | None = Query(None, alias="date", description="AAAA-MM-DD; por defecto, hoy")):
+        return queries.daily_summary(day)
 
     @router.get('/detections/{detection_id}')
     def get_detection(detection_id: str):

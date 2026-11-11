@@ -291,7 +291,7 @@ def create_app(predictor: Predictor | None = None, *, mode: str | None = None,
     app.add_middleware(CORSMiddleware, allow_origins=origins,
                        allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
-                       expose_headers=["X-Detection-ID"])
+                       expose_headers=["X-Detection-ID", "X-Total-Count"])
     @app.exception_handler(ApplicationError)
     async def application_error(request, error):
         return JSONResponse(status_code=error_status(error), content={"detail": str(error)})

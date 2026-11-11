@@ -36,6 +36,14 @@ def test_postgres_concurrent_schema_and_alert_writes():
                 dict(clase="Hurto", confianza=.9, timestamp=1, simulated=True),
                 "cam", session_id=f"s{i}") for i in range(6)]
             opening = dict(alert=dict(started=True, ended=False, threshold=.5))
+            # El resumen del tablero usa substr y comparación de texto: debe comportarse igual en PostgreSQL.
+            detections = DetectionStore(isolated)
+            assert detections.count() == 6 and detections.count("cam") == 6 and detections.count("otra") == 0
+            summary = detections.summary("2000-01-01T00:00:00", "2999-01-01T00:00:00")
+            assert sum(total for *_, total in summary) == 6
+            assert {(clase, camera) for clase, camera, _, _ in summary} == {("Hurto", "cam")}
+            assert all(0 <= hour <= 23 for _, _, hour, _ in summary)
+            assert detections.summary("2000-01-01T00:00:00", "2000-01-02T00:00:00") == []
 
             def open_and_interrupt(record):
                 # Independent stores force concurrent first-time schema initialization.

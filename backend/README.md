@@ -134,7 +134,8 @@ Todas las rutas exigen `X-API-Key`, salvo `/health`, `/docs`, `/redoc` y `/opena
 | `GET /health` | Estado del modelo, GPU y transporte. |
 | `GET/POST /cameras`, `GET/PUT/DELETE /cameras/{source_id}` | Inventario de cámaras. |
 | `POST /sources/start`, `GET /sources`, `GET /sources/{id}/status`, `DELETE /sources/{id}` | Iniciar, consultar y detener el análisis de una cámara. |
-| `GET /detections`, `GET /detections/{id}` | Historial de inferencias (filtro `camera`, `limit` 1–500, `offset`). |
+| `GET /detections`, `GET /detections/{id}` | Historial de inferencias (filtro `camera`, `limit` 1–500, `offset`). La lista incluye la cabecera `X-Total-Count` con el total. |
+| `GET /detections/summary` | Resumen de un día en hora de Lima (`date=AAAA-MM-DD`, por defecto hoy): total, anomalías, por clase, por cámara y por hora. |
 | `GET /alerts`, `GET /alerts/{id}` | Eventos confirmados (filtros `camera`, `status`; paginación). |
 | `GET /alerts/{id}/clip` | Clip del evento: `status` (`recording`, `ready`, `partial`, `missing`), `duration_seconds` y, si está en el bucket, una `url` firmada temporal. |
 | `GET /inference-logs`, `GET /inference-logs/{id}` | Logs operativos (filtros cámara, evento, nivel y fechas con zona horaria). |
