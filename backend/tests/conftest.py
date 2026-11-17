@@ -23,6 +23,9 @@ def configured(monkeypatch, tmp_path):
     monkeypatch.setenv("SENTRIX_PREDICTOR", "mock")
     monkeypatch.setenv("SENTRIX_VIDEO_TRANSPORT", "rtsp")
     monkeypatch.setenv("FRONTEND_ORIGINS", "https://sentrix-vercel-upload.vercel.app")
+    # Sin retención: las pruebas siembran fechas fijas que con el tiempo superan los 7 días
+    # y la purga en segundo plano las borraría a mitad de la prueba. La retención tiene sus propias pruebas.
+    monkeypatch.setenv("SENTRIX_RETENTION_DAYS", "0")
     for key in list(os.environ):
         if key.startswith("TA2_") or key == "SENTRIX_ALERT_THRESHOLDS":
             monkeypatch.delenv(key, raising=False)
