@@ -1,11 +1,16 @@
 /** @param {{ inferenceClient: (path: string, options?: any) => Promise<any> }} dependencies */
 export function createDetectionService({ inferenceClient }) {
   return {
-    /** @param {{ limit?: number, offset?: number }} options */
-    async list({ limit = 10, offset = 0 } = {}) {
+    /** @param {{ limit?: number, offset?: number, clase?: string, query?: string, since?: string, until?: string }} options */
+    async list({ limit = 10, offset = 0, clase, query, since, until } = {}) {
       const safeLimit = boundedInteger(limit, 10, 1, 100);
       const safeOffset = boundedInteger(offset, 0, 0, Number.MAX_SAFE_INTEGER);
-      const response = await inferenceClient(`/detections?limit=${safeLimit}&offset=${safeOffset}`, { includeHeaders: true });
+      const params = new URLSearchParams({ limit: String(safeLimit), offset: String(safeOffset) });
+      if (typeof clase === 'string' && clase.trim()) params.set('clase', clase.trim().slice(0, 100));
+      if (typeof query === 'string' && query.trim()) params.set('q', query.trim().slice(0, 100));
+      if (typeof since === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(since)) params.set('since', since);
+      if (typeof until === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(until)) params.set('until', until);
+      const response = await inferenceClient(`/detections?${params}`, { includeHeaders: true });
       const payload = response?.data ?? response;
       const headerTotal = Number(response?.headers?.['x-total-count']);
       return Array.isArray(payload)
