@@ -44,6 +44,12 @@ def test_postgres_concurrent_schema_and_alert_writes():
             assert {(clase, camera) for clase, camera, _, _ in summary} == {("Hurto", "cam")}
             assert all(0 <= hour <= 23 for _, _, hour, _ in summary)
             assert detections.summary("2000-01-01T00:00:00", "2000-01-02T00:00:00") == []
+            # Filtros del panel: lista IN de clases, lista vacía y rango de fechas como texto ISO.
+            assert detections.count(classes=("Hurto", "Robo")) == 6 and detections.count(classes=()) == 0
+            assert detections.count("cam", classes=("Robo",)) == 0
+            assert len(detections.list(classes=("Hurto",), limit=4)) == 4
+            assert detections.count(date_from="2000-01-01T00:00:00", date_to="2999-01-01T00:00:00") == 6
+            assert detections.count(date_to="2000-01-01T00:00:00") == 0
 
             def open_and_interrupt(record):
                 # Independent stores force concurrent first-time schema initialization.
@@ -61,6 +67,8 @@ def test_postgres_concurrent_schema_and_alert_writes():
             store = AlertStore(isolated)
             assert store.list(status="active")["total"] == 0
             assert store.list(status="interrupted")["total"] == 6
+            assert store.list(status="interrupted", classes=("Hurto",))["total"] == 6
+            assert store.list(classes=("Robo",))["total"] == 0 and store.list(classes=())["items"] == []
             from app.infrastructure.persistence.inference_logs import InferenceLogStore
 
             def write_logs(worker):

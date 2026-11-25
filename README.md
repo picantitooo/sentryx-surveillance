@@ -152,8 +152,8 @@ El frontend utiliza los siguientes recursos del servicio de inferencia:
 | `/cameras` | Registrar, listar y administrar cámaras. |
 | `/sources/start` | Iniciar el procesamiento de una fuente. |
 | `/sources/{id}/status` | Consultar el estado de una fuente. |
-| `/detections` | Recuperar el historial de detecciones. |
-| `/alerts` | Recuperar alertas generadas. |
+| `/detections` | Recuperar el historial de detecciones. Filtros: `camera`, `clase`, `q`, `since` y `until` (días de Lima); total en `X-Total-Count`. |
+| `/alerts` | Recuperar alertas generadas. Filtros: `camera`, `status` y `clase`. |
 | `/inference-logs` | Consultar registros técnicos del servicio. |
 
 Las respuestas exactas y la persistencia en Neon son responsabilidad del backend. Si FastAPI no está disponible, el sitio puede cargar, pero las funciones de monitoreo e inferencia aparecerán sin conexión.

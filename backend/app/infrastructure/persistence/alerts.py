@@ -186,14 +186,9 @@ class AlertStore(DetectionStore):
         finally:
             connection.close()
 
-    def list(self, camera=None, status=None, limit=100, offset=0):
+    def list(self, camera=None, status=None, limit=100, offset=0, *, classes=None):
+        where, params = self._where(camera, classes, status=status)
         connection = self.connect()
-        clauses, params = [], []
-        for column, value in (("camera", camera), ("status", status)):
-            if value is not None:
-                clauses.append(f"{column}=?")
-                params.append(value)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         try:
             with connection:
                 connection.execute("BEGIN")

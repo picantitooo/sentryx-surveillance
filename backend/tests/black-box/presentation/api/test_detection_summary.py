@@ -54,3 +54,63 @@ def test_detection_list_keeps_its_shape_and_reports_the_total(api_client):
     assert isinstance(page.json(), list) and len(page.json()) == 2
     assert page.headers["X-Total-Count"] == "6"
     assert api_client.get("/detections", params={"camera": "camara2"}).headers["X-Total-Count"] == "1"
+
+
+def test_detection_filters_by_class_text_and_lima_days(api_client):
+    store = api_client.app.state.detection_store
+    seed(store, [
+        ("camara1", "2026-11-10T05:00:00+00:00", "Agresión física"),   # 10-11 00:00 en Lima
+        ("camara1", "2026-11-10T15:00:00+00:00", "Robo"),
+        ("camara2", "2026-11-11T04:59:59Z", "Robo"),                    # 10-11 23:59 en Lima, formato con Z
+        ("camara1", "2026-11-11T05:00:00+00:00", "Normal"),            # 11-11 en Lima
+        ("camara2", "2026-11-12T16:00:00+00:00", "Vandalismo"),
+    ])
+
+    def total(**params):
+        response = api_client.get("/detections", params=params)
+        assert response.status_code == 200, response.text
+        return int(response.headers["X-Total-Count"]), [item["clase"] for item in response.json()]
+
+    assert total(clase="robo") == (2, ["Robo", "Robo"])
+    assert total(clase="agresion_fisica") == (1, ["Agresión física"])  # el valor que envía el panel
+    assert total(q="AGRES")[0] == 1                                    # sin importar tildes ni mayúsculas
+    assert total(q="xyz") == (0, [])                                  # sin coincidencias: vacío, no la lista completa
+    assert total(since="2026-11-10", until="2026-11-10")[0] == 3       # el día completo de Lima
+    assert total(since="2026-11-11")[0] == 2
+    assert total(until="2026-11-10")[0] == 3
+    assert total(clase="robo", camera="camara2", since="2026-11-10", until="2026-11-10") == (1, ["Robo"])
+    assert api_client.get("/detections", params={"since": "2026-11-12", "until": "2026-11-10"}).status_code == 422
+    assert api_client.get("/detections", params={"since": "ayer"}).status_code == 422
+
+
+def test_alert_list_filters_by_class(api_client):
+    store = api_client.app.state.alert_store
+    connection = store.connect()
+    try:
+        with connection:
+            for index, (camera, clase, status) in enumerate([("camara1", "Robo", "closed"),
+                                                             ("camara1", "Agresión física", "closed"),
+                                                             ("camara2", "Robo", "active")]):
+                detection = f"d{index}"
+                connection.execute("INSERT INTO detections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   (detection, camera, f"2026-11-10T15:00:0{index}+00:00", clase, 0.9, float(index),
+                                    0, None, None, None))
+                connection.execute(
+                    "INSERT INTO alerts (id, detection_id, camera, session_id, clase, confianza, threshold, timestamp, "
+                    "fecha_hora, timestamp_inicio, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (f"a{index}", detection, camera, f"s{index}", clase, 0.9, 0.6, float(index),
+                     f"2026-11-10T15:00:0{index}+00:00", float(index), status))
+    finally:
+        connection.close()
+
+    def classes(**params):
+        response = api_client.get("/alerts", params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        return body["total"], sorted(item["clase"] for item in body["items"])
+
+    assert classes() == (3, ["Agresión física", "Robo", "Robo"])
+    assert classes(clase="robo") == (2, ["Robo", "Robo"])
+    assert classes(clase="Agresion") == (1, ["Agresión física"])
+    assert classes(clase="robo", status="active") == (1, ["Robo"])
+    assert classes(clase="nada") == (0, [])

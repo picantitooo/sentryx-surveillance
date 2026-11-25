@@ -1,13 +1,47 @@
 """Read use cases shared by detection, alert and operational log repositories."""
+import unicodedata
 from datetime import datetime, time, timedelta, timezone
+from typing import get_args
 
 from app.application.errors import InvalidInput, NotFound, Unavailable
 from app.application.ports import AlertRepository, DetectionRepository, LogRepository
+from app.domain.inference import Classes
 
 # Lima no tiene horario de verano: un desfase fijo evita depender de tzdata en Windows.
 LIMA_OFFSET = -5
 LIMA = timezone(timedelta(hours=LIMA_OFFSET))
 ISO = "%Y-%m-%dT%H:%M:%S"
+CLASS_NAMES = get_args(Classes)
+
+
+def _fold(text):
+    """Sin tildes, en minúsculas y con espacios en lugar de _ o -: 'agresion_fisica' == 'Agresión física'."""
+    text = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+    return " ".join(text.lower().replace("_", " ").replace("-", " ").split())
+
+
+def matching_classes(*texts):
+    """Clases cuyo nombre contiene todos los textos dados; None si no hay texto (sin filtro), () si ninguna coincide."""
+    wanted = [_fold(text) for text in texts if text and text.strip()]
+    if not wanted:
+        return None
+    return tuple(name for name in CLASS_NAMES if all(part in _fold(name) for part in wanted))
+
+
+def record_filters(*class_texts, since=None, until=None):
+    """Filtros de repositorio: clases exactas y [inicio de `since`, fin de `until`) en días de Lima, como texto ISO UTC."""
+    if since is not None and until is not None and since > until:
+        raise InvalidInput("since debe ser menor o igual a until")
+    filters = {}
+    classes = matching_classes(*class_texts)
+    if classes is not None:
+        filters["classes"] = classes
+    if since is not None:
+        filters["date_from"] = datetime.combine(since, time(), LIMA).astimezone(timezone.utc).strftime(ISO)
+    if until is not None:
+        end = datetime.combine(until, time(), LIMA) + timedelta(days=1)
+        filters["date_to"] = end.astimezone(timezone.utc).strftime(ISO)
+    return filters
 
 
 class RecordQueries:
@@ -35,9 +69,9 @@ class RecordQueries:
             raise NotFound(self.missing)
         return record
 
-    def count(self, *args):
+    def count(self, *args, **filters):
         try:
-            return self.repository.count(*args)
+            return self.repository.count(*args, **filters)
         except Exception:
             raise Unavailable(self.unavailable) from None
 

@@ -2,14 +2,18 @@
 from fastapi import APIRouter, Query
 from typing import Literal
 
+from app.application.queries import record_filters
+
 
 def alerts_router(service, clips=None):
     router = APIRouter(prefix='/alerts', tags=['Alertas EN-4'])
 
     @router.get('')
     def list_alerts(camera: str | None = None, status: Literal['active', 'closed', 'interrupted'] | None = None,
-                    limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-        return service.list(camera, status, limit, offset)
+                    limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+                    clase: str | None = Query(None, max_length=100,
+                                              description='Texto contenido en la clase, sin importar tildes ni mayúsculas')):
+        return service.list(camera, status, limit, offset, **record_filters(clase))
 
     @router.get('/{alert_id}')
     def get_alert(alert_id: str):

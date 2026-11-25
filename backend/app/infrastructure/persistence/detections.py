@@ -76,23 +76,42 @@ class DetectionStore:
         finally:
             connection.close()
 
-    def list(self, camera=None, limit=100, offset=0):
+    @staticmethod
+    def _where(camera=None, classes=None, date_from=None, date_to=None, **equal):
+        """WHERE común de listado y conteo. Las fechas son texto ISO en UTC: se comparan por prefijo, como en summary."""
+        clauses, params = [], []
+        for column, value in (("camera", camera), *equal.items()):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if classes is not None:
+            # Ninguna clase coincide con el texto buscado: la respuesta es vacía, no la lista completa.
+            clauses.append("clase IN (" + ", ".join("?" * len(classes)) + ")" if classes else "1 = 0")
+            params.extend(classes)
+        if date_from is not None:
+            clauses.append("fecha_hora >= ?")
+            params.append(date_from)
+        if date_to is not None:
+            clauses.append("fecha_hora < ?")
+            params.append(date_to)
+        return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
+
+    def list(self, camera=None, limit=100, offset=0, *, classes=None, date_from=None, date_to=None):
+        where, params = self._where(camera, classes, date_from, date_to)
         connection = self.connect()
         try:
             rows = connection.execute(
-                "SELECT * FROM detections " + ("WHERE camera = ? " if camera is not None else "") +
-                "ORDER BY fecha_hora DESC, id DESC LIMIT ? OFFSET ?",
-                ((camera,) if camera is not None else ()) + (limit, offset)).fetchall()
+                "SELECT * FROM detections" + where + " ORDER BY fecha_hora DESC, id DESC LIMIT ? OFFSET ?",
+                params + (limit, offset)).fetchall()
             return [self.decode(row) for row in rows]
         finally:
             connection.close()
 
-    def count(self, camera=None):
+    def count(self, camera=None, *, classes=None, date_from=None, date_to=None):
+        where, params = self._where(camera, classes, date_from, date_to)
         connection = self.connect()
         try:
-            row = connection.execute(
-                "SELECT count(*) AS total FROM detections" + (" WHERE camera = ?" if camera is not None else ""),
-                (camera,) if camera is not None else ()).fetchone()
+            row = connection.execute("SELECT count(*) AS total FROM detections" + where, params).fetchone()
             return int(row["total"])
         finally:
             connection.close()
