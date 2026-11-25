@@ -10,11 +10,25 @@ test('alertas normaliza límites y filtros antes de consultar la API', async () 
   assert.equal(path, '/alerts?limit=100&offset=0&camera=camara1&status=active');
 });
 
+test('alertas transmite clase al backend junto a cámara y estado', async () => {
+  let path = '';
+  const service = createAlertService({ inferenceClient: async (value) => { path = value; return { items: [] }; } });
+  await service.list({ camera: 'camara1', status: 'interrupted', clase: 'robo', limit: 8, offset: 16 });
+  assert.equal(path, '/alerts?limit=8&offset=16&camera=camara1&status=interrupted&clase=robo');
+});
+
 test('detecciones evita NaN y trunca valores decimales', async () => {
   let path = '';
   const service = createDetectionService({ inferenceClient: async (value) => { path = value; return []; } });
   await service.list({ limit: 17.9, offset: 'NaN' });
   assert.equal(path, '/detections?limit=17&offset=0');
+});
+
+test('detecciones transmite filtros y conserva paginación en el backend', async () => {
+  let path = '';
+  const service = createDetectionService({ inferenceClient: async (value) => { path = value; return []; } });
+  await service.list({ limit: 10, offset: 20, clase: 'robo', query: 'entrada', since: '2026-11-01', until: '2026-11-17' });
+  assert.equal(path, '/detections?limit=10&offset=20&clase=robo&q=entrada&since=2026-11-01&until=2026-11-17');
 });
 
 test('detecciones usa el total enviado en la cabecera sin cambiar la lista', async () => {

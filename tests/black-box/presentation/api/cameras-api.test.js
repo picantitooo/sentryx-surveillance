@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { startTestApplication } from '../../support/test-server.js';
+import { authenticatedFetch, startTestApplication } from '../../support/test-server.js';
 
 let app;
 before(async () => { app = await startTestApplication(); });
 after(async () => { await app?.close(); });
 
 test('GET /api/camera lista las cámaras de FastAPI', async () => {
-  const response = await fetch(`${app.baseUrl}/api/camera`);
+  const response = await authenticatedFetch(`${app.baseUrl}/api/camera`);
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.cameras.length, 1);
@@ -15,7 +15,7 @@ test('GET /api/camera lista las cámaras de FastAPI', async () => {
 });
 
 test('POST /api/camera rechaza fuentes sin HTTPS', async () => {
-  const response = await fetch(`${app.baseUrl}/api/camera`, {
+  const response = await authenticatedFetch(`${app.baseUrl}/api/camera`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'Patio', url: 'http://media.example/camera02/' })
   });
@@ -24,7 +24,7 @@ test('POST /api/camera rechaza fuentes sin HTTPS', async () => {
 });
 
 test('POST /api/camera registra una fuente e inicia la inferencia', async () => {
-  const response = await fetch(`${app.baseUrl}/api/camera`, {
+  const response = await authenticatedFetch(`${app.baseUrl}/api/camera`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'Patio', url: 'https://media.example/camera02/' })
   });
@@ -35,7 +35,7 @@ test('POST /api/camera registra una fuente e inicia la inferencia', async () => 
 });
 
 test('DELETE /api/camera detiene y elimina una cámara', async () => {
-  const response = await fetch(`${app.baseUrl}/api/camera?id=camara2`, { method: 'DELETE' });
+  const response = await authenticatedFetch(`${app.baseUrl}/api/camera?id=camara2`, { method: 'DELETE' });
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.removed, true);

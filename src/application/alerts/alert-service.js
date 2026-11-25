@@ -6,11 +6,12 @@
  */
 export function createAlertService({ inferenceClient }) {
   return {
-    /** @param {{ camera?: string | null, status?: string | null, limit?: number, offset?: number }} filters */
-    async list({ camera, status, limit = 100, offset = 0 } = {}) {
+    /** @param {{ camera?: string | null, status?: string | null, clase?: string | null, limit?: number, offset?: number }} filters */
+    async list({ camera, status, clase, limit = 100, offset = 0 } = {}) {
       const query = new URLSearchParams({ limit: String(boundedInteger(limit, 100, 1, 500)), offset: String(boundedInteger(offset, 0, 0, Number.MAX_SAFE_INTEGER)) });
       if (typeof camera === 'string' && camera.trim()) query.set('camera', camera.trim().slice(0, 100));
       if (typeof status === 'string' && status.trim()) query.set('status', status.trim().slice(0, 32));
+      if (typeof clase === 'string' && clase.trim()) query.set('clase', clase.trim().slice(0, 100));
       return inferenceClient(`/alerts?${query}`);
     },
     /** @param {string} id */

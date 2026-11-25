@@ -4,6 +4,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { join } from 'node:path';
 
 const apiKey = 'black-box-key';
+export const testAuthorization = 'Bearer black-box-session';
 const registeredAt = '2026-10-17T10:00:00.000Z';
 
 function getAvailablePort() {
@@ -30,17 +31,24 @@ async function readJson(request) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 
+/** @param {string} input @param {RequestInit} [options] */
+export function authenticatedFetch(input, options = {}) {
+  const headers = new Headers(options.headers);
+  headers.set('Authorization', testAuthorization);
+  return fetch(input, { ...options, headers });
+}
+
 function createMockBackend(cameras, state) {
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
-    if (request.headers['x-api-key'] !== apiKey) {
-      sendJson(response, 401, { detail: 'API key inválida' }); return;
+    if (request.headers.authorization !== testAuthorization && request.headers['x-api-key'] !== apiKey) {
+      sendJson(response, 401, { detail: 'Credencial inválida' }); return;
     }
     if (request.method === 'GET' && url.pathname === '/health') {
       if (!state.apiAvailable) {
         sendJson(response, 503, { detail: 'FastAPI no disponible' }); return;
       }
-      sendJson(response, 200, { status: 'ok' }); return;
+      sendJson(response, 200, { status: 'ok', rtsp: { workers: { 'worker-test': {} } } }); return;
     }
     if (request.method === 'GET' && url.pathname === '/cameras') {
       sendJson(response, 200, { cameras }); return;
@@ -71,6 +79,13 @@ function createMockBackend(cameras, state) {
     }
     if (request.method === 'DELETE' && /^\/sources\/[^/]+$/.test(url.pathname)) {
       sendJson(response, 200, { stopped: true }); return;
+    }
+    if (request.method === 'GET' && url.pathname === '/sources') {
+      const sources = cameras.map((camera) => ({
+        source_id: camera.source_id,
+        ...(state.sources[camera.source_id] ?? { status: 'stopped' })
+      }));
+      sendJson(response, 200, { sources }); return;
     }
     if (request.method === 'GET' && /\/sources\/[^/]+\/status$/.test(url.pathname)) {
       const id = decodeURIComponent(url.pathname.split('/').at(-2));

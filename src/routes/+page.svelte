@@ -52,7 +52,6 @@
   let selectedId = $state('');
   let inference = $state<InferenceResponse | null>(null);
   let inferenceByCamera = $state<Record<string, InferenceResponse>>({});
-  let playbackReadyByCamera = $state<Record<string, boolean>>({});
   let loading = $state(true);
   let connecting = $state(true);
   let busy = $state(false);
@@ -84,6 +83,7 @@
   let dashboardAnalyticsLastRefresh = $state<Date | null>(null);
   let detectionTotal = $state<number | null>(null);
   let detectionsLoading = $state(false);
+  let detectionsError = $state('');
   let serviceLogs = $state<ServiceLog[]>([]);
   let serviceLogsLoading = $state(false);
   let serviceLogsError = $state('');
@@ -95,6 +95,9 @@
   let alertPage = $state(1);
   const ALERT_PAGE_SIZE = 8;
   let alertTotal = $state<number | null>(null);
+  let alertCameraFilter = $state('all');
+  let alertStatusFilter = $state('all');
+  let alertClassFilter = $state('');
   let selectedAlert = $state<Alert | null>(null);
   let AlertsViewComponent = $state<any>(null);
   let AlertDetailDialogComponent = $state<any>(null);
@@ -126,15 +129,8 @@
   let aiConnected = $derived(inference?.available === true);
   let aiReceiving = $derived(aiConnected && isSourceReceiving(source));
   let sourceAvailable = $derived(aiConnected && hasVideoSignal(source));
-  let selectedPlaybackReady = $derived(camera ? playbackReadyByCamera[camera.id] === true : false);
   let isAdmin = $derived(authProfile?.role === 'admin');
-  let filteredDetections = $derived(detectionResults.filter((d) => {
-    const cls = (d.clase ?? d.class_name ?? '').toLowerCase();
-    const date = d.fecha_hora ?? d.created_at ?? '';
-    return (actionFilter === 'all' || cls === actionFilter) &&
-      (!since || date.slice(0, 10) >= since) && (!until || date.slice(0, 10) <= until) &&
-      (!query || cls.includes(query.toLowerCase()));
-  }).sort((left, right) => {
+  let filteredDetections = $derived(detectionResults.slice().sort((left, right) => {
     const leftTime = new Date(left.fecha_hora ?? left.created_at ?? 0).getTime();
     const rightTime = new Date(right.fecha_hora ?? right.created_at ?? 0).getTime();
     return rightTime - leftTime;
@@ -143,12 +139,8 @@
   let currentDetectionPage = $derived(Math.min(detectionPage, detectionPageCount));
   let paginatedDetections = $derived(filteredDetections);
   let filteredServiceLogs = $derived(serviceLogs.filter((log) => {
-    const level = String(log.level ?? '').toUpperCase();
-    const cameraId = String(log.camera ?? '');
     const text = `${log.event_type ?? ''} ${log.message ?? ''} ${log.session_id ?? ''} ${log.window_id ?? ''}`.toLowerCase();
-    return (logLevel === 'all' || level === logLevel) &&
-      (logCamera === 'all' || cameraId === logCamera) &&
-      (!logQuery || text.includes(logQuery.toLowerCase()));
+    return !logQuery || text.includes(logQuery.toLowerCase());
   }));
   let logPageCount = $derived(Math.max(1, Math.ceil(filteredServiceLogs.length / LOG_PAGE_SIZE)));
   let currentLogPage = $derived(Math.min(logPage, logPageCount));
@@ -324,7 +316,7 @@
     inference = selectedId ? inferenceByCamera[selectedId] ?? null : null;
   }
   async function refreshDetections(options: { force?: boolean } = {}) {
-    const cacheKey = `${DETECTIONS_CACHE_PREFIX}${detectionPage}`;
+    const cacheKey = `${DETECTIONS_CACHE_PREFIX}${detectionPage}:${actionFilter}:${query}:${since}:${until}`;
     if (!options.force) {
       const cached = readOperationalCache<DetectionListResponse>(cacheKey);
       if (cached) {
@@ -334,12 +326,18 @@
       }
     }
     detectionsLoading = true;
+    detectionsError = '';
     try {
       const offset = (detectionPage - 1) * DETECTION_PAGE_SIZE;
-      const data = await getJSON<DetectionListResponse>(`/api/detections?limit=${DETECTION_PAGE_SIZE}&offset=${offset}`);
+      const params = new URLSearchParams({ limit: String(DETECTION_PAGE_SIZE), offset: String(offset) });
+      if (actionFilter !== 'all') params.set('clase', actionFilter);
+      if (query.trim()) params.set('q', query.trim());
+      if (since) params.set('since', since);
+      if (until) params.set('until', until);
+      const data = await getJSON<DetectionListResponse>(`/api/detections?${params}`);
       detectionResults = data.items ?? []; detectionTotal = data.total ?? null;
       writeOperationalCache(cacheKey, data);
-    } catch { detectionResults = []; detectionTotal = 0; }
+    } catch (reason) { detectionResults = []; detectionTotal = 0; detectionsError = errorMessage(reason); }
     finally { detectionsLoading = false; }
   }
   async function loadDashboardAnalytics(options: { force?: boolean } = {}) {
@@ -357,7 +355,10 @@
     serviceLogsLoading = true;
     serviceLogsError = '';
     try {
-      const data = await getJSON<ServiceLogsResponse>('/api/service-logs?limit=200');
+      const params = new URLSearchParams({ limit: '200' });
+      if (logLevel !== 'all') params.set('level', logLevel);
+      if (logCamera !== 'all') params.set('camera', logCamera);
+      const data = await getJSON<ServiceLogsResponse>(`/api/service-logs?${params}`);
       serviceLogs = data.logs ?? [];
       serviceLogsLastRefresh = new Date();
     } catch (e) {
@@ -368,7 +369,7 @@
     }
   }
   async function refreshAlerts(options: { force?: boolean } = {}) {
-    const cacheKey = `${ALERTS_CACHE_PREFIX}${alertPage}`;
+    const cacheKey = `${ALERTS_CACHE_PREFIX}${alertPage}:${alertCameraFilter}:${alertStatusFilter}:${alertClassFilter}`;
     if (!options.force) {
       const cached = readOperationalCache<AlertListResponse>(cacheKey);
       if (cached) {
@@ -380,7 +381,11 @@
     alertsLoading = true; alertsError = '';
     try {
       const offset = (alertPage - 1) * ALERT_PAGE_SIZE;
-      const data = await getJSON<AlertListResponse>(`/api/alerts?limit=${ALERT_PAGE_SIZE}&offset=${offset}`);
+      const params = new URLSearchParams({ limit: String(ALERT_PAGE_SIZE), offset: String(offset) });
+      if (alertCameraFilter !== 'all') params.set('camera', alertCameraFilter);
+      if (alertStatusFilter !== 'all') params.set('status', alertStatusFilter);
+      if (alertClassFilter.trim()) params.set('clase', alertClassFilter.trim());
+      const data = await getJSON<AlertListResponse>(`/api/alerts?${params}`);
       allAlerts = (data.items ?? []).map(normalizeAlertTiming);
       alertTotal = data.total ?? null;
       writeOperationalCache(cacheKey, data);
@@ -617,11 +622,7 @@
   }
   function monitorStatusLabel(cameraId: string) {
     const result = inferenceByCamera[cameraId];
-    if (playbackReadyByCamera[cameraId] && isPending(result?.source)) return 'Video disponible · esperando IA';
     return sourceStatusLabel(result?.source, result?.available);
-  }
-  function markPlaybackReady(cameraId: string) {
-    playbackReadyByCamera = { ...playbackReadyByCamera, [cameraId]: true };
   }
   function sourceWorkerLabel(item: InferenceSource | null | undefined) {
     if (!item?.worker_id) return '';
@@ -643,6 +644,15 @@
     const result = inferenceByCamera[cameraId];
     const itemSource = result?.source;
     return result?.available === true && hasVideoSignal(itemSource);
+  }
+  function updateDetectionFilters() { detectionPage = 1; void refreshDetections({ force: true }); }
+  function updateLogFilters() { logPage = 1; void refreshServiceLogs(); }
+  function updateAlertFilters(filters: { camera?: string, status?: string, clase?: string }) {
+    if (filters.camera !== undefined) alertCameraFilter = filters.camera;
+    if (filters.status !== undefined) alertStatusFilter = filters.status;
+    if (filters.clase !== undefined) alertClassFilter = filters.clase;
+    alertPage = 1;
+    void refreshAlerts({ force: true });
   }
   function go(id: ViewId) { view = id; clearFeedback(); if (id === 'overview') loadDashboardAnalytics(); if (id === 'monitor') { monitorExpanded = false; monitorPage = 1; } if (id === 'service') refreshServiceLogs(); if (id === 'alerts') { void ensureAlertsView(); alertPage = 1; refreshAlerts(); } if (id === 'detections') { detectionPage = 1; refreshDetections(); } }
   async function showRegistration(event?: MouseEvent) {
@@ -837,9 +847,9 @@
           <div class="camera-wall">
             {#each paginatedMonitorCameras as item (item.id)}
               <section class="surface camera-tile">
-                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id) || playbackReadyByCamera[item.id]} class:waiting={isPending(inferenceByCamera[item.id]?.source) && !playbackReadyByCamera[item.id]} class="pill">{monitorStatusLabel(item.id)}</span></div>
+                <div class="camera-tile-head"><h2>{cameraLabel(item)}</h2><span class:positive={cameraIsOnline(item.id)} class:waiting={isPending(inferenceByCamera[item.id]?.source)} class="pill">{monitorStatusLabel(item.id)}</span></div>
                 <div class="tile-stream">
-                  <iframe src={item.url} title={`Video de ${item.name}`} onload={() => markPlaybackReady(item.id)} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+                  <iframe src={item.url} title={`Video de ${item.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
                   <span class="source-mark" aria-hidden="true">SOURCE&nbsp;&nbsp;/&nbsp;&nbsp;CCTV</span>
                 </div>
                 <div class="camera-tile-foot">
@@ -860,7 +870,7 @@
             <section class="surface stream-surface">
               <div class="section-title"><div><h2>{cameraLabel(camera)}</h2></div><div class="stream-actions"><button class="text-btn" onclick={() => showPlayer = !showPlayer}>{showPlayer ? 'Ocultar' : 'Mostrar'}</button><a class="external" href={camera.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir transmisión original de ${camera.name} en una nueva ventana`}>Abrir original ↗</a></div></div>
               <div class="stream">
-                {#if showPlayer}{#key camera.id}<iframe src={camera.url} title={`Video de ${camera.name}`} onload={() => markPlaybackReady(camera.id)} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>{/key}
+                {#if showPlayer}{#key camera.id}<iframe src={camera.url} title={`Video de ${camera.name}`} allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>{/key}
                 {:else}<div class="stream-paused"><span>◉</span><strong>Reproductor oculto</strong><p>La inferencia continúa en el servidor mientras esté activa.</p></div>{/if}
               </div>
               <div class="stream-footer"><span><span class="led live"></span> Fuente registrada</span><span>La reproducción se conecta directamente a AWS</span></div>
@@ -881,10 +891,10 @@
       {:else if view === 'detections'}
         <section class="surface">
           <div class="section-title"><div><h2>Historial de detecciones</h2><p>Resultados paginados desde FastAPI; no se descargan durante el monitoreo.</p></div><span class="pill neutral">{detectionTotal ?? filteredDetections.length} resultados</span></div>
-          <div class="filters"><label>Buscar acción<input placeholder="Buscar clasificación" bind:value={query} oninput={() => detectionPage = 1}/></label><label>Acción estimada<select bind:value={actionFilter} onchange={() => detectionPage = 1}><option value="all">Todas las acciones</option><option value="normal">Normal</option><option value="hurto">Hurto</option><option value="robo">Robo</option><option value="agresion_fisica">Agresión física</option><option value="vandalismo">Vandalismo</option></select></label><label>Desde<input type="date" bind:value={since} onchange={() => detectionPage = 1}/></label><label>Hasta<input type="date" bind:value={until} onchange={() => detectionPage = 1}/></label></div>
+          <div class="filters"><label>Buscar acción<input placeholder="Buscar clasificación" bind:value={query} oninput={updateDetectionFilters}/></label><label>Acción estimada<select bind:value={actionFilter} onchange={updateDetectionFilters}><option value="all">Todas las acciones</option><option value="normal">Normal</option><option value="hurto">Hurto</option><option value="robo">Robo</option><option value="agresion_fisica">Agresión física</option><option value="vandalismo">Vandalismo</option></select></label><label>Desde<input type="date" bind:value={since} onchange={updateDetectionFilters}/></label><label>Hasta<input type="date" bind:value={until} onchange={updateDetectionFilters}/></label></div>
           <div class="table-scroll"><table><caption class="sr-only">Historial de detecciones</caption><thead><tr><th scope="col">Fecha y hora</th><th scope="col">Cámara</th><th scope="col">Acción estimada</th><th scope="col">Confianza</th></tr></thead><tbody>
             {#each paginatedDetections as detection, i (detection.id ?? `${detection.camera}-${detection.fecha_hora}-${i}`)}<tr><td>{fmtDate(detection.fecha_hora)}</td><td>{detection.camera ?? '—'}</td><td><strong>{labelClass(detection.clase)}</strong></td><td>{confidence(detection.confianza)}</td></tr>
-            {:else}<tr><td colspan="4" class="table-empty">{detectionsLoading ? 'Consultando detecciones…' : aiConnected ? 'No hay detecciones para los filtros seleccionados.' : 'Sin registros disponibles. Verifica la conexión con FastAPI.'}</td></tr>{/each}
+            {:else}<tr><td colspan="4" class="table-empty">{detectionsLoading ? 'Consultando detecciones…' : detectionsError ? `No se pudieron consultar las detecciones: ${detectionsError}` : 'No hay detecciones para los filtros seleccionados.'}</td></tr>{/each}
           </tbody></table></div>
           {#if filteredDetections.length > 0}
             <nav class="pagination-bar detection-pagination" aria-label="Paginación de detecciones">
@@ -897,7 +907,7 @@
 
       {:else if view === 'alerts'}
         {#if AlertsViewComponent}
-          <AlertsViewComponent {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
+          <AlertsViewComponent {alerts} {cameras} loading={alertsLoading} error={alertsError} onRefresh={() => refreshAlerts({ force: true })} onDetail={showAlertDetail} page={currentAlertPage} pageCount={alertPageCount} total={alertTotal ?? alerts.length} onPageChange={(page: number) => { alertPage = page; refreshAlerts(); }} cameraFilter={alertCameraFilter} statusFilter={alertStatusFilter} classFilter={alertClassFilter} onFilterChange={updateAlertFilters} formatDate={fmtDate} {duration} {confidence} {labelClass} {statusLabel} />
         {:else}<div class="empty" role="status">Cargando eventos…</div>{/if}
 
       {:else if view === 'service'}
@@ -906,8 +916,8 @@
           <div class="section-title"><div><h2>Historial técnico de inferencia</h2><p>Ejecuciones, errores, eventos y tiempos guardados por el servicio</p></div><button class="btn secondary" onclick={refreshServiceLogs} disabled={serviceLogsLoading}>{serviceLogsLoading ? 'Consultando...' : '↻ Actualizar'}</button></div>
           <div class="log-filters">
             <label>Buscar<input placeholder="Evento, mensaje, sesión o ventana" bind:value={logQuery} oninput={() => logPage = 1}/></label>
-            <label>Nivel<select bind:value={logLevel} onchange={() => logPage = 1}><option value="all">Todos los niveles</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="DEBUG">DEBUG</option><option value="CRITICAL">CRITICAL</option></select></label>
-            <label>Cámara<select bind:value={logCamera} onchange={() => logPage = 1}><option value="all">Todas las cámaras</option>{#each [...new Set(serviceLogs.map((log) => log.camera).filter(Boolean))] as cameraId}<option value={cameraId}>{cameraId}</option>{/each}</select></label>
+            <label>Nivel<select bind:value={logLevel} onchange={updateLogFilters}><option value="all">Todos los niveles</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="DEBUG">DEBUG</option><option value="CRITICAL">CRITICAL</option></select></label>
+            <label>Cámara<select bind:value={logCamera} onchange={updateLogFilters}><option value="all">Todas las cámaras</option>{#each cameras as camera (camera.id)}<option value={camera.id}>{cameraLabel(camera)}</option>{/each}</select></label>
           </div>
           {#if serviceLogsError}<div class="banner error logs-error"><strong>No se pudieron consultar los logs</strong><span>{serviceLogsError}</span></div>{/if}
           <div class="table-scroll"><table class="logs-table"><caption class="sr-only">Historial técnico de inferencia</caption><thead><tr><th scope="col">Fecha y hora</th><th scope="col">Nivel</th><th scope="col">Cámara</th><th scope="col">Tipo de evento</th><th scope="col">Rendimiento</th><th scope="col">Mensaje</th></tr></thead><tbody>
@@ -942,7 +952,7 @@
         <label for="url">Dirección WebRTC segura <span>*</span></label><input id="url" type="url" required pattern="https://.*" title="La dirección debe comenzar con https://" bind:value={url} placeholder="https://servidor/camera01/" />
         <p class="form-help">Por seguridad, solo se permiten direcciones que comiencen con <strong>https://</strong>.</p>
         {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
-        <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si cambias la ruta, reinicia el análisis desde el inventario para aplicar la nueva fuente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
+        <div class="info-note"><strong>Transmisión existente</strong><p>{editingCamera ? 'Si la cámara estaba en análisis, SentriX la detendrá, aplicará el cambio y reiniciará el análisis automáticamente.' : 'La cámara debe estar publicando antes de registrarla. Si la ruta ya está registrada, SentriX asignará automáticamente un identificador diferente al nuevo registro.'}</p></div>
         <div class="modal-actions"><button type="button" class="btn secondary" onclick={closeRegistration} disabled={busy}>Cancelar</button><button type="submit" class="btn primary" disabled={busy}>{busy ? (editingCamera ? 'Aplicando cambios...' : 'Registrando...') : editingCamera ? 'Guardar cambios' : 'Registrar y activar IA'}</button></div>
       </form>
     </div>
@@ -983,8 +993,8 @@
   .section-title{display:flex;align-items:start;justify-content:space-between;gap:14px;margin-bottom:21px}.section-title h2{font-size:16px;margin:0;color:#1d3654;font-weight:750}.section-title p{font-size:12px;color:#8997a8;margin:6px 0 0}.pill{display:inline-flex;align-items:center;border-radius:5px;font-size:11px;font-weight:700;background:#fff4e8;color:#ac6a22;padding:6px 9px;white-space:nowrap}.pill.positive{background:#e5f6ef;color:#22835e}.pill.neutral{background:#eff3f8;color:#697f96}.pill.waiting{background:#fff4de;color:#916000}
   .placeholder,.empty{text-align:center;padding:43px 22px;color:#788ca3}.placeholder p,.empty p{font-size:12px;line-height:1.65;max-width:340px;margin:9px auto 18px}.placeholder-icon{font-size:32px;color:#9caec2;display:block;margin-bottom:10px}.placeholder.compact{padding:22px 5px}.tiny{font-size:11px;color:#8799ab}
   .table-surface{padding:0}.table-surface .section-title{padding:24px 25px 0}.table-scroll{width:100%;overflow:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}thead{background:#f6f8fb;color:#71849c;font-size:11px}th{padding:15px 19px;font-weight:750;white-space:nowrap}td{padding:19px;border-top:1px solid #edf1f6;color:#5c7289;vertical-align:middle}td strong{display:block;color:#25405d;font-weight:700}td small{display:block;color:#879bb0;margin-top:5px}.source-type{font-size:11px}.table-actions{display:flex;flex-wrap:wrap;gap:5px}.text-btn{border:1px solid #dce6ef;background:white;border-radius:5px;color:#215681;font-size:11px;font-weight:650;padding:7px 9px}.text-btn:hover{background:#eef6ff}.text-btn.destructive{color:#b64d55;border-color:#f2d7da}.text-btn:disabled{opacity:.5}.table-empty{text-align:center;color:#95a2b3;padding:45px 15px}.empty{padding:65px 20px}.empty h3{margin:0;color:#2c4966;font-size:16px}
-  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}
-  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px;text-transform:capitalize}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}.icon-actions{gap:7px}.camera-table .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:7px;font-size:16px;line-height:1}.camera-table .icon-btn.destructive{font-size:20px;font-weight:500}
+  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}
+  .camera-table{min-width:940px}.camera-table thead{background:#eff5fb;color:#365875}.camera-table th{padding:14px 18px}.camera-table td{padding:17px 18px}.camera-table tbody tr{transition:background .15s}.camera-table tbody tr:hover{background:#f9fcff}.camera-identity{display:flex;align-items:center;gap:11px;min-width:180px}.camera-identity>span{display:grid;place-items:center;width:35px;height:35px;border-radius:9px;background:#e5f1fc;color:#1574c7;font-size:17px}.camera-identity strong{color:#173e68;font-size:13px}.camera-identity small{margin-top:3px}.connection-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:#edf5fb;color:#3d6d94;font-size:10px;font-weight:750}.connection-badge i{width:6px;height:6px;border-radius:50%;background:#1ba489}.camera-path{margin:5px 0 0 2px!important;color:#8ca0b4!important;font-size:10px!important}.camera-status{gap:6px;background:#fff3e5;color:#a7601c}.camera-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.camera-status.positive{background:#e6f6ef;color:#158166}.camera-status.waiting{background:#fff5df;color:#986513}.registration-date{color:#617b93;font-size:11px;font-variant-numeric:tabular-nums}.monitor-action{border-color:#92bfe4;background:#eef7ff;color:#0865ae}.monitor-action:hover{background:#dfeffc}.camera-table .table-actions{flex-wrap:nowrap}.camera-table .text-btn{white-space:nowrap}.icon-actions{gap:7px}.camera-table .icon-btn{display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:7px;font-size:16px;line-height:1}.camera-table .icon-btn.destructive{font-size:20px;font-weight:500}
   .monitor-grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(270px,.82fr);align-items:start;gap:21px}.monitor-aside{display:flex;flex-direction:column;gap:20px}.stream-surface{padding:20px}.stream{background:#061326;aspect-ratio:16/9;border-radius:7px;overflow:hidden}.stream iframe{width:100%;height:100%;border:0;display:block}.stream-paused{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#b6cce0}.stream-paused span{font-size:50px;color:#4e7ea5}.stream-paused p{font-size:12px;text-align:center;padding:0 20px}.stream-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#7c91a5;font-size:11px}.stream-footer>span{display:flex;align-items:center;gap:7px}.stream-footer .led{margin:0}.external{font-size:11px;color:#21609a;text-decoration:none;white-space:nowrap}.metric-list{display:flex;flex-direction:column}.metric-list>div{border-bottom:1px solid #eef1f5;padding:12px 0;display:flex;justify-content:space-between;gap:10px}.metric-list span{font-size:11px;color:#8596a9}.metric-list strong{font-size:12px;color:#32516c;text-align:right}.metric-list strong i{display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:currentColor}.metric-list strong.positive{color:#08705f}.metric-list strong.offline{color:#a65255}.metric-list strong.waiting{color:#a26a17}.prediction-label{font-size:24px;font-weight:800;text-transform:capitalize;margin-top:24px;color:#1c557e}.prediction-confidence{display:flex;justify-content:space-between;gap:10px;padding:16px 0;color:#71879d;font-size:12px}.prediction-confidence>span{display:flex;flex-direction:column;gap:5px}.prediction-confidence strong{color:#1f8b68}
   .camera-wall{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px}.camera-tile{padding:17px 17px 18px;border-radius:13px}.camera-tile-head,.camera-tile-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.camera-tile-head{padding:3px 6px 17px}.camera-tile-head h2{margin:0;color:var(--sx-ink);font-size:17px}.camera-tile-head .pill{background:#edf3f8;color:#56708b}.camera-tile-head .pill.positive{background:#e5f6ef;color:#168267}
   .tile-stream{position:relative;aspect-ratio:16/9;background:#0d2a43;border-radius:9px;overflow:hidden}.tile-stream iframe{width:100%;height:100%;border:0;display:block}.source-mark{position:absolute;left:18px;top:15px;color:#71b0d4;font-size:9px;letter-spacing:1.5px;pointer-events:none;text-shadow:0 1px 2px #071a2c}

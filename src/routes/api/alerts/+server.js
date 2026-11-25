@@ -7,10 +7,11 @@ export async function GET({ url, request }) {
   const { alertService } = createServerServices(request.headers.get('authorization'));
   const camera = url.searchParams.get('camera')?.trim() || null;
   const status = url.searchParams.get('status')?.trim() || null;
+  const clase = url.searchParams.get('clase')?.trim() || null;
   const limit = Number(url.searchParams.get('limit')) || 100;
   const offset = Number(url.searchParams.get('offset')) || 0;
   try {
-    return json(await alertService.list({ camera, status, limit, offset }));
+    return json(await alertService.list({ camera, status, clase, limit, offset }));
   } catch (error) {
     return json({ items: [], total: 0, limit, offset, error: error instanceof Error ? error.message : String(error) }, { status: 502 });
   }

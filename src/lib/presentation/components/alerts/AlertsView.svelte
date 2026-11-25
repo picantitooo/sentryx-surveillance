@@ -1,13 +1,5 @@
 <script lang="ts">
-  let { alerts = [], cameras = [], loading = false, error = '', onRefresh, onDetail, page = 1, pageCount = 1, total = 0, onPageChange, formatDate, duration, confidence, labelClass, statusLabel } = $props<any>();
-  let cameraFilter = $state('all');
-  let statusFilter = $state('all');
-  let classFilter = $state('');
-  let visibleAlerts = $derived(alerts.filter((alert: any) =>
-    (cameraFilter === 'all' || String(alert.camera ?? '') === cameraFilter) &&
-    (statusFilter === 'all' || String(alert.status ?? '').toLowerCase() === statusFilter) &&
-    (!classFilter.trim() || String(labelClass(alert.clase)).toLowerCase().includes(classFilter.trim().toLowerCase()))
-  ));
+  let { alerts = [], cameras = [], loading = false, error = '', onRefresh, onDetail, page = 1, pageCount = 1, total = 0, onPageChange, cameraFilter = 'all', statusFilter = 'all', classFilter = '', onFilterChange, formatDate, duration, confidence, labelClass, statusLabel } = $props<any>();
   function isInterrupted(alert: any) { return String(alert.status ?? '').toLowerCase() === 'interrupted'; }
   function isActive(alert: any) { return String(alert.status ?? '').toLowerCase() === 'active'; }
   function isHybridAlert(alert: any) { return Math.abs(Number(alert.threshold) - 0.85) < 0.001; }
@@ -19,14 +11,14 @@
     <div class="events-actions"><span class="event-count" aria-label={`${total} eventos`}>{total}<small>eventos</small></span><button class="refresh-button" type="button" onclick={onRefresh} disabled={loading} aria-label="Actualizar eventos"><span aria-hidden="true">↻</span>{loading ? 'Actualizando' : 'Actualizar'}</button></div>
   </header>
   <div class="event-filters" aria-label="Filtros de eventos">
-    <label>Cámara<select bind:value={cameraFilter}><option value="all">Todas las cámaras</option>{#each cameras as camera (camera.id)}<option value={camera.id}>{camera.number ? `Cámara ${camera.number}` : camera.id}</option>{/each}</select></label>
-    <label>Estado<select bind:value={statusFilter}><option value="all">Todos los estados</option><option value="active">Activo</option><option value="closed">Cerrado</option><option value="interrupted">Interrumpido</option></select></label>
-    <label>Clase<input bind:value={classFilter} placeholder="Buscar clase" /></label>
+    <label>Cámara<select value={cameraFilter} onchange={(event) => onFilterChange({ camera: event.currentTarget.value })}><option value="all">Todas las cámaras</option>{#each cameras as camera (camera.id)}<option value={camera.id}>{camera.number ? `Cámara ${camera.number}` : camera.id}</option>{/each}</select></label>
+    <label>Estado<select value={statusFilter} onchange={(event) => onFilterChange({ status: event.currentTarget.value })}><option value="all">Todos los estados</option><option value="active">Activo</option><option value="closed">Cerrado</option><option value="interrupted">Interrumpido</option></select></label>
+    <label>Clase<input value={classFilter} oninput={(event) => onFilterChange({ clase: event.currentTarget.value })} placeholder="Buscar clase" /></label>
   </div>
   {#if error}<div class="banner error" role="alert"><strong>No se pudieron actualizar los eventos</strong><span>{error}</span></div>{/if}
-  {#if visibleAlerts.length}
+  {#if alerts.length}
     <div class="event-list" aria-live="polite">
-      {#each visibleAlerts as alert, i (alert.id ?? `${alert.fecha_hora}-${i}`)}
+      {#each alerts as alert, i (alert.id ?? `${alert.fecha_hora}-${i}`)}
         <article class:interrupted={isInterrupted(alert)} class:active={isActive(alert)} class="event-card">
           <div class="event-rail" aria-hidden="true"><span>!</span></div>
           <div class="event-content">
@@ -40,7 +32,7 @@
     </div>
     {#if pageCount > 1}
       <nav class="pagination" aria-label="Paginación de eventos">
-        <span>Mostrando {alerts.length} de {total} eventos</span>
+        <span>Mostrando {alerts.length} de {total} eventos filtrados</span>
         <div><button type="button" onclick={() => onPageChange(page - 1)} disabled={page <= 1}>← Anterior</button><strong>Página {page} de {pageCount}</strong><button type="button" onclick={() => onPageChange(page + 1)} disabled={page >= pageCount}>Siguiente →</button></div>
       </nav>
     {/if}
